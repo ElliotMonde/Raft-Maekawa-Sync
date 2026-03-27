@@ -1,0 +1,1 @@
+// structs for Request, Reply, Yield and Inquire
