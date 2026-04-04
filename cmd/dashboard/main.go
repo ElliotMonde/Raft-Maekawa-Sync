@@ -1,0 +1,1 @@
+// starts visualizer to see nodes interacting in real-time

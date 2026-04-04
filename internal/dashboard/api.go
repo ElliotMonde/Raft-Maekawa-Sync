@@ -1,1 +1,1 @@
-// server data to frontend e.g. net/http
+// serving data to frontend e.g. net/http
