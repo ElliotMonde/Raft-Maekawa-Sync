@@ -1,0 +1,1 @@
+// starts a maekawa worker node

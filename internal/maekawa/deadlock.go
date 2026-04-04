@@ -1,1 +1,1 @@
-// implement Yield and Inquire
+// implement Yield and Inquire, circular-wait prevention logic
