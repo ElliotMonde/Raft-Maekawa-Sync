@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package maekawa;
 
-option go_package = "Raft-Maekawa-Sync/api/maekawa";
+option go_package = "raft-maekawa-sync/api/maekawa";
 
 service Maekawa {
     rpc RequestLock (LockRequest) returns (LockResponse);
