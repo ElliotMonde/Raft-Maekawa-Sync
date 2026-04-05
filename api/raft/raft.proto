@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package raft;
 
-option go_package = "Raft-Maekawa-Sync/api/raft";
+option go_package = "raft-maekawa-sync/api/raft";
 
 service Raft {
     // Candidate nodes call this to ask peers for their vote

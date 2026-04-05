@@ -2,16 +2,18 @@ syntax = "proto3";
 
 package maekawa;
 
-option go_package = "Raft-Maekawa-Sync/api/maekawa";
+option go_package = "raft-maekawa-sync/api/maekawa";
 
 service Maekawa {
     rpc RequestLock (LockRequest) returns (LockResponse);
     rpc ReleaseLock (ReleaseRequest) returns (Empty);
-    rpc Inquire (InquireRequest) returns (YieldResponse);
-    rpc Failed (FailedRequest) returns (Empty);
+    rpc Inquire (InquireRequest) returns (Empty);
+    rpc Yield (YieldRequest) returns (Empty);
+    rpc Grant (GrantRequest) returns (Empty);
 }
 
 message Empty {}
+
 message LockRequest {
     int32 node_id = 1;
     int64 timestamp = 2;
@@ -30,11 +32,10 @@ message InquireRequest {
     int32 sender_id = 1;
 }
 
-message YieldResponse {
-    int32 node_id = 1;
-    bool yielded = 2;
+message YieldRequest {
+    int32 sender_id = 1;
 }
 
-message FailedRequest {
-    int32 node_id = 1;
+message GrantRequest {
+    int32 sender_id = 1;
 }
