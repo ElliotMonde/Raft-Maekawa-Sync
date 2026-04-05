@@ -5,34 +5,29 @@ import (
 	"fmt"
 	"net"
 
-	maekawapb "raft-maekawa/proto/maekawapb"
 	"google.golang.org/grpc"
+	maekawapb "raft-maekawa/proto/maekawapb"
 )
 
-// MaekawaHandler is the function the Worker provides to handle incoming messages.
-// The network layer calls this whenever a MaekawaMsg arrives.
+// MaekawaHandler handles an incoming Maekawa message.
 type MaekawaHandler func(msg *maekawapb.MaekawaMsg) error
 
-// maekawaServer implements the generated MaekawaServiceServer interface.
-// It is thin — it just receives the gRPC call and forwards to the handler.
 type maekawaServer struct {
 	maekawapb.UnimplementedMaekawaServiceServer
 	handler MaekawaHandler
 }
 
-// Send is called by gRPC when another worker sends a MaekawaMsg to this node.
 func (s *maekawaServer) Send(_ context.Context, msg *maekawapb.MaekawaMsg) (*maekawapb.Ack, error) {
 	err := s.handler(msg)
 	return &maekawapb.Ack{Ok: err == nil}, err
 }
 
-// MaekawaServer wraps a gRPC server and exposes Stop().
+// MaekawaServer wraps the gRPC server.
 type MaekawaServer struct {
 	grpc *grpc.Server
 }
 
 // StartMaekawaServer binds to addr and starts serving Maekawa RPCs.
-// handler is called for every incoming MaekawaMsg — this will be Worker.HandleMessage.
 func StartMaekawaServer(addr string, handler MaekawaHandler) (*MaekawaServer, error) {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -42,11 +37,8 @@ func StartMaekawaServer(addr string, handler MaekawaHandler) (*MaekawaServer, er
 	grpcSrv := grpc.NewServer()
 	maekawapb.RegisterMaekawaServiceServer(grpcSrv, &maekawaServer{handler: handler})
 
-	// serve in background — caller blocks on other work or signal
 	go func() {
-		if err := grpcSrv.Serve(lis); err != nil {
-			// server stopped — either via Stop() or a fatal error
-		}
+		_ = grpcSrv.Serve(lis)
 	}()
 
 	return &MaekawaServer{grpc: grpcSrv}, nil

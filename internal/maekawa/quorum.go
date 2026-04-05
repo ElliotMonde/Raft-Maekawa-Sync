@@ -1,7 +1,6 @@
 package maekawa
 
 import (
-	//go's heap interface
 	"container/heap"
 	"math"
 	"sort"
@@ -9,32 +8,27 @@ import (
 	maekawapb "raft-maekawa/proto/maekawapb"
 )
 
-// gridSizeFor returns ceil(sqrt(n)), the grid dimension for n nodes.
 func gridSizeFor(n int) int {
 	return int(math.Ceil(math.Sqrt(float64(n))))
 }
 
-// row of Node
 func rowOf(nodeID, n int) int { return nodeID / gridSizeFor(n) }
 
-// col of node
 func colOf(nodeID, n int) int { return nodeID % gridSizeFor(n) }
 
 func QuorumFor(nodeID, n int) []int {
 	seen := make(map[int]struct{})
 
-	k := gridSizeFor(n) // k×k virtual grid
+	k := gridSizeFor(n)
 	row := rowOf(nodeID, n)
 	col := colOf(nodeID, n)
 
-	// add all real nodes in the same row
 	for i := 0; i < n; i++ {
 		if rowOf(i, n) == row {
 			seen[i] = struct{}{}
 		}
 	}
 
-	// add all real nodes in the same column across all k rows
 	for r := 0; r < k; r++ {
 		id := r*k + col
 		if id < n {
@@ -50,7 +44,6 @@ func QuorumFor(nodeID, n int) []int {
 	return result
 }
 
-// sortedActiveIDs returns the keys of activeWorkers that are true, in ascending order.
 func sortedActiveIDs(activeWorkers map[int]bool) []int {
 	ids := make([]int, 0, len(activeWorkers))
 	for id, active := range activeWorkers {
@@ -63,8 +56,6 @@ func sortedActiveIDs(activeWorkers map[int]bool) []int {
 }
 
 // RegridQuorum computes a fresh quorum for selfID after membership changes.
-// It maps the active set onto positions 0..len(active)-1, runs QuorumFor on
-// the position of selfID, then maps positions back to original IDs.
 func RegridQuorum(selfID int, active []int) []int {
 	pos := -1
 	for i, id := range active {
@@ -85,7 +76,6 @@ func RegridQuorum(selfID int, active []int) []int {
 	return result
 }
 
-// priority queue using min-heap by lamport's clock and sender ID
 type RequestHeap []*maekawapb.MaekawaMsg
 
 func (h RequestHeap) Len() int { return len(h) }
@@ -116,7 +106,6 @@ func HeapPush(h *RequestHeap, msg *maekawapb.MaekawaMsg) {
 	heap.Push(h, msg)
 }
 
-// pop highest priority request -> lowest lock/ sender ID if clocks the same
 func HeapPop(h *RequestHeap) *maekawapb.MaekawaMsg {
 	return heap.Pop(h).(*maekawapb.MaekawaMsg)
 }

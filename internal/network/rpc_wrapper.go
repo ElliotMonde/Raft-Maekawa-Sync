@@ -5,7 +5,6 @@ import (
 )
 
 // MaekawaRPC wraps MaekawaClient with typed send methods.
-// Worker code calls these instead of constructing MaekawaMsg directly.
 type MaekawaRPC struct {
 	SelfID int
 	client *MaekawaClient
@@ -19,7 +18,7 @@ func NewMaekawaRPC(selfID int, peers map[int]string) *MaekawaRPC {
 	}
 }
 
-// SendRequest sends a REQUEST to targetID — "I want to enter CS for taskID".
+// SendRequest sends a REQUEST.
 func (r *MaekawaRPC) SendRequest(targetID int, taskID string, clock int64) error {
 	return r.client.Send(targetID, &maekawapb.MaekawaMsg{
 		Type:     maekawapb.MsgType_REQUEST,
@@ -29,7 +28,7 @@ func (r *MaekawaRPC) SendRequest(targetID int, taskID string, clock int64) error
 	})
 }
 
-// SendReply sends a REPLY to targetID — "you have my vote".
+// SendReply sends a REPLY.
 func (r *MaekawaRPC) SendReply(targetID int, taskID string, clock int64) error {
 	return r.client.Send(targetID, &maekawapb.MaekawaMsg{
 		Type:     maekawapb.MsgType_REPLY,
@@ -39,7 +38,7 @@ func (r *MaekawaRPC) SendReply(targetID int, taskID string, clock int64) error {
 	})
 }
 
-// SendRelease sends a RELEASE to targetID — "I am done, free your vote".
+// SendRelease sends a RELEASE.
 func (r *MaekawaRPC) SendRelease(targetID int, taskID string, clock int64) error {
 	return r.client.Send(targetID, &maekawapb.MaekawaMsg{
 		Type:     maekawapb.MsgType_RELEASE,
@@ -49,8 +48,7 @@ func (r *MaekawaRPC) SendRelease(targetID int, taskID string, clock int64) error
 	})
 }
 
-// SendInquire sends an INQUIRE to targetID — "can I rescind my vote?" (deadlock resolution).
-// inquiredClock is the clock of the REQUEST the voter originally granted.
+// SendInquire sends an INQUIRE for the granted request identified by inquiredClock.
 func (r *MaekawaRPC) SendInquire(targetID int, taskID string, clock int64, inquiredClock int64) error {
 	return r.client.Send(targetID, &maekawapb.MaekawaMsg{
 		Type:         maekawapb.MsgType_INQUIRE,
@@ -61,8 +59,7 @@ func (r *MaekawaRPC) SendInquire(targetID int, taskID string, clock int64, inqui
 	})
 }
 
-// SendYield sends a YIELD to targetID — "yes, take back your vote".
-// inquiredClock identifies the grant round being yielded back.
+// SendYield sends a YIELD for the inquiry identified by inquiredClock.
 func (r *MaekawaRPC) SendYield(targetID int, taskID string, clock int64, inquiredClock int64) error {
 	return r.client.Send(targetID, &maekawapb.MaekawaMsg{
 		Type:         maekawapb.MsgType_YIELD,
@@ -73,7 +70,7 @@ func (r *MaekawaRPC) SendYield(targetID int, taskID string, clock int64, inquire
 	})
 }
 
-// SendFailed sends a FAILED to targetID — "I cannot grant your request".
+// SendFailed sends a FAILED.
 func (r *MaekawaRPC) SendFailed(targetID int, taskID string, clock int64) error {
 	return r.client.Send(targetID, &maekawapb.MaekawaMsg{
 		Type:     maekawapb.MsgType_FAILED,

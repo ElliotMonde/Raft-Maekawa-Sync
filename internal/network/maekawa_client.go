@@ -6,22 +6,20 @@ import (
 	"sync"
 	"time"
 
-	maekawapb "raft-maekawa/proto/maekawapb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	maekawapb "raft-maekawa/proto/maekawapb"
 )
 
-// MaekawaClient holds one persistent gRPC connection per peer worker.
-// Connections are created lazily on first Send and reused after that.
+// MaekawaClient caches gRPC connections and stubs per peer.
 type MaekawaClient struct {
 	mu    sync.Mutex
-	conns map[int]*grpc.ClientConn          // nodeID -> open connection
-	stubs map[int]maekawapb.MaekawaServiceClient // nodeID -> RPC stub
-	peers map[int]string                    // nodeID -> "host:port"
+	conns map[int]*grpc.ClientConn
+	stubs map[int]maekawapb.MaekawaServiceClient
+	peers map[int]string
 }
 
 // NewMaekawaClient creates a client for the given peer map.
-// peers maps nodeID -> "host:port" for every worker in the cluster.
 func NewMaekawaClient(peers map[int]string) *MaekawaClient {
 	return &MaekawaClient{
 		conns: make(map[int]*grpc.ClientConn),
@@ -30,8 +28,7 @@ func NewMaekawaClient(peers map[int]string) *MaekawaClient {
 	}
 }
 
-// Send delivers msg to the worker identified by targetID.
-// It dials a new connection if one does not exist yet, with retries.
+// Send delivers msg to targetID.
 func (c *MaekawaClient) Send(targetID int, msg *maekawapb.MaekawaMsg) error {
 	stub, err := c.getStub(targetID)
 	if err != nil {
@@ -43,7 +40,6 @@ func (c *MaekawaClient) Send(targetID int, msg *maekawapb.MaekawaMsg) error {
 
 	_, err = stub.Send(ctx, msg)
 	if err != nil {
-		// connection may be stale — remove it so next Send re-dials
 		c.mu.Lock()
 		delete(c.conns, targetID)
 		delete(c.stubs, targetID)
@@ -64,7 +60,7 @@ func (c *MaekawaClient) Close() {
 	}
 }
 
-// getStub returns a cached stub or dials a new connection with backoff.
+// getStub returns a cached stub or dials a new connection.
 func (c *MaekawaClient) getStub(targetID int) (maekawapb.MaekawaServiceClient, error) {
 	c.mu.Lock()
 	if stub, ok := c.stubs[targetID]; ok {
@@ -73,7 +69,6 @@ func (c *MaekawaClient) getStub(targetID int) (maekawapb.MaekawaServiceClient, e
 	}
 	c.mu.Unlock()
 
-	// dial with exponential backoff: 100ms, 200ms, 400ms
 	addr, ok := c.peers[targetID]
 	if !ok {
 		return nil, fmt.Errorf("unknown peer node %d", targetID)

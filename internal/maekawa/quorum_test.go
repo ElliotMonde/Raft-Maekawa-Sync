@@ -8,7 +8,7 @@ import (
 
 const n = 9 // total workers
 
-// TestQuorumSize verifies every node's quorum has exactly 5 members (2*sqrt(9)-1).
+// TestQuorumSize checks the expected quorum size for a 3x3 grid.
 func TestQuorumSize(t *testing.T) {
 	for id := 0; id < n; id++ {
 		q := QuorumFor(id, n)
@@ -18,7 +18,7 @@ func TestQuorumSize(t *testing.T) {
 	}
 }
 
-// TestQuorumSelfIncluded verifies every node includes itself in its quorum.
+// TestQuorumSelfIncluded checks that each node is in its own quorum.
 func TestQuorumSelfIncluded(t *testing.T) {
 	for id := 0; id < n; id++ {
 		q := QuorumFor(id, n)
@@ -35,8 +35,7 @@ func TestQuorumSelfIncluded(t *testing.T) {
 	}
 }
 
-// TestQuorumIntersection verifies any two quorums share at least 1 member.
-// This is the core Maekawa safety property.
+// TestQuorumIntersection checks that every pair of quorums intersects.
 func TestQuorumIntersection(t *testing.T) {
 	for i := 0; i < n; i++ {
 		for j := i + 1; j < n; j++ {
@@ -49,7 +48,7 @@ func TestQuorumIntersection(t *testing.T) {
 	}
 }
 
-// TestQuorumSorted verifies QuorumFor returns a sorted slice.
+// TestQuorumSorted checks that QuorumFor returns sorted members.
 func TestQuorumSorted(t *testing.T) {
 	for id := 0; id < n; id++ {
 		q := QuorumFor(id, n)
@@ -61,13 +60,13 @@ func TestQuorumSorted(t *testing.T) {
 	}
 }
 
-// TestKnownQuorums spot-checks RegridQuorum with the full active set (equivalent to QuorumFor).
+// TestKnownQuorums spot-checks RegridQuorum against known full-grid results.
 func TestKnownQuorums(t *testing.T) {
 	active := []int{0, 1, 2, 3, 4, 5, 6, 7, 8}
 	cases := map[int][]int{
-		0: {0, 1, 2, 3, 6}, // pos0: row0={0,1,2} col0={0,3,6}
-		4: {1, 3, 4, 5, 7}, // pos4: row1={3,4,5} col1={1,4,7}
-		8: {2, 5, 6, 7, 8}, // pos8: row2={6,7,8} col2={2,5,8}
+		0: {0, 1, 2, 3, 6},
+		4: {1, 3, 4, 5, 7},
+		8: {2, 5, 6, 7, 8},
 	}
 	for id, expected := range cases {
 		got := RegridQuorum(id, active)
@@ -77,8 +76,7 @@ func TestKnownQuorums(t *testing.T) {
 	}
 }
 
-// TestRegridAfterRemoval verifies that after removing one node, every remaining
-// node's RegridQuorum pairwise intersects and contains itself.
+// TestRegridAfterRemoval checks self-inclusion and intersection after a removal.
 func TestRegridAfterRemoval(t *testing.T) {
 	removed := 4
 	active := make([]int, 0, n-1)
@@ -115,8 +113,7 @@ func TestRegridAfterRemoval(t *testing.T) {
 	}
 }
 
-// TestRegridAfterAdd verifies that after adding a new node beyond the original N,
-// every node's RegridQuorum pairwise intersects and contains itself.
+// TestRegridAfterAdd checks self-inclusion and intersection after an add.
 func TestRegridAfterAdd(t *testing.T) {
 	newID := 9
 	active := make([]int, 0, n+1)
@@ -152,14 +149,14 @@ func TestRegridAfterAdd(t *testing.T) {
 	}
 }
 
-// TestRequestHeapOrder verifies the heap pops in (clock, senderID) order.
+// TestRequestHeapOrder checks heap order by clock then sender ID.
 func TestRequestHeapOrder(t *testing.T) {
 	h := &RequestHeap{}
 
 	msgs := []*maekawapb.MaekawaMsg{
 		{SenderId: 3, Clock: 10},
 		{SenderId: 1, Clock: 5},
-		{SenderId: 7, Clock: 5},  // same clock as above, higher senderID
+		{SenderId: 7, Clock: 5},
 		{SenderId: 2, Clock: 8},
 		{SenderId: 6, Clock: 1},
 	}
@@ -168,7 +165,6 @@ func TestRequestHeapOrder(t *testing.T) {
 		HeapPush(h, m)
 	}
 
-	// expected pop order: (1,6), (5,1), (5,7), (8,2), (10,3)
 	expected := []struct {
 		clock    int64
 		senderID int32
@@ -188,8 +184,6 @@ func TestRequestHeapOrder(t *testing.T) {
 		}
 	}
 }
-
-// -- helpers --
 
 func intersects(a, b []int) bool {
 	set := make(map[int]bool, len(a))

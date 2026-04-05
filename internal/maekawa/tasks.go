@@ -9,13 +9,10 @@ import (
 	"raft-maekawa/internal/models"
 )
 
-// TaskEventReporter is the outbound bridge from a worker back to Raft.
-// A real Raft client should commit the event and return once it is accepted.
 type TaskEventReporter interface {
 	SubmitTaskEvent(ctx context.Context, event models.TaskEvent) error
 }
 
-// TaskExecutor performs the task payload after this worker has won Maekawa.
 type TaskExecutor func(ctx context.Context, task *models.Task) (string, error)
 
 type taskCommitState struct {
@@ -40,9 +37,6 @@ func (w *Worker) SetTaskExecutor(executor TaskExecutor) {
 	w.mu.Unlock()
 }
 
-// ApplyTaskEvent is the Raft-facing apply hook. Membership events update quorum
-// state, assigned tasks are queued for contention, and terminal task events
-// cancel duplicates that are still waiting to enter the CS.
 func (w *Worker) ApplyTaskEvent(event models.TaskEvent) {
 	switch event.Type {
 	case models.EventAssigned:
@@ -54,10 +48,6 @@ func (w *Worker) ApplyTaskEvent(event models.TaskEvent) {
 		w.enqueueAssignedTask(task)
 	case models.EventWon:
 		w.recordCommittedEvent(event)
-		// Another worker won the CS and Raft committed the claim.
-		// For all losers this is terminal: mark the task so that any queued,
-		// in-flight, or executing attempt is suppressed. The winner may later
-		// follow up with EventDone/EventFailed, or Raft may cancel the task.
 		if event.WorkerID != w.ID {
 			w.markTaskTerminal(event)
 		}
@@ -75,9 +65,6 @@ func (w *Worker) ApplyTaskEvent(event models.TaskEvent) {
 	}
 }
 
-// RunTaskLoop processes tasks that arrived from committed EventAssigned entries.
-// Each worker contends for the task, executes it if it wins, then reports the
-// outcome back through the configured TaskEventReporter.
 func (w *Worker) RunTaskLoop(ctx context.Context) error {
 	for {
 		select {
@@ -98,55 +85,59 @@ func (w *Worker) RunTaskLoop(ctx context.Context) error {
 
 func (w *Worker) processAssignedTask(ctx context.Context, task *models.Task) error {
 	if err := w.RequestCS(ctx, task); err != nil {
-		if !w.taskTerminal(task.ID) {
-			w.clearQueuedTask(task.ID)
-		}
+		w.clearQueuedTaskIfContending(task.ID)
 		return err
 	}
 
-	// Won the CS — report the win to Raft before executing.
-	// Raft must commit EventWon so all workers learn who the winner is and stop
-	// their own in-flight attempts. Only after Raft accepts do we start executing.
-	//
-	// TODO(raft): replace SubmitTaskEvent with a real Raft propose-and-wait call.
-	// The reporter commits the event cluster-wide; every node's apply path calls
-	// ApplyTaskEvent(EventWon) which calls markTaskTerminal for the losers.
+	if err := w.claimTaskWin(ctx, task.ID); err != nil {
+		w.clearQueuedTaskIfContending(task.ID)
+		w.ReleaseCS()
+		return err
+	}
+
+	if w.shouldSkipExecution(task.ID) {
+		w.ReleaseCS()
+		return nil
+	}
+
+	result, execErr, alreadyTerminal := w.executeWonTask(ctx, task)
+	if alreadyTerminal {
+		w.ReleaseCS()
+		return nil
+	}
+
+	doneEvent := terminalEventForTask(task, w.ID, result, execErr)
+	if err := w.commitTerminalTaskEvent(ctx, doneEvent); err != nil {
+		w.releaseAndResetTaskTracking(task.ID)
+		return err
+	}
+
+	w.markTaskTerminal(doneEvent)
+	w.ReleaseCS()
+	return execErr
+}
+
+func (w *Worker) claimTaskWin(ctx context.Context, taskID string) error {
 	winEvent := models.TaskEvent{
 		Type:     models.EventWon,
-		TaskID:   task.ID,
+		TaskID:   taskID,
 		WorkerID: w.ID,
 	}
 	if err := w.submitTaskEvent(ctx, winEvent); err != nil {
-		// Raft rejected the win claim (e.g. another winner already committed).
-		// Release the CS without executing — we are not the accepted winner.
-		if !w.taskTerminal(task.ID) {
-			w.clearQueuedTask(task.ID)
-		}
-		w.ReleaseCS()
-		return fmt.Errorf("win claim rejected for task %s: %w", task.ID, err)
+		return fmt.Errorf("win claim rejected for task %s: %w", taskID, err)
 	}
-	if err := w.waitForCommittedEvent(ctx, winEvent); err != nil {
-		if !w.taskTerminal(task.ID) {
-			w.clearQueuedTask(task.ID)
-		}
-		w.ReleaseCS()
-		return err
-	}
+	return w.waitForCommittedEvent(ctx, winEvent)
+}
 
-	// A terminal event can arrive after EventWon is committed but before the
-	// executor is installed. In that case, skip execution entirely.
-	if terminalEvent, ok := w.committedTerminalEvent(task.ID); ok {
+func (w *Worker) shouldSkipExecution(taskID string) bool {
+	if terminalEvent, ok := w.committedTerminalEvent(taskID); ok {
 		w.markTaskTerminal(terminalEvent)
-		w.ReleaseCS()
-		w.markTaskTerminal(terminalEvent)
-		return nil
+		return true
 	}
-	if w.taskPermanentlyTerminal(task.ID) {
-		w.ReleaseCS()
-		return nil
-	}
+	return w.taskPermanentlyTerminal(taskID)
+}
 
-	// Raft accepted our win. Now execute.
+func (w *Worker) executeWonTask(ctx context.Context, task *models.Task) (string, error, bool) {
 	execCtx, execCancel := context.WithCancel(ctx)
 	w.mu.Lock()
 	task.OwnerID = w.ID
@@ -160,8 +151,7 @@ func (w *Worker) processAssignedTask(ctx context.Context, task *models.Task) err
 
 	w.mu.Lock()
 	w.execCancel = nil
-	st := w.taskStatus[task.ID]
-	alreadyTerminal := st == models.TaskDone || st == models.TaskFailed || st == models.TaskCanceled || st == models.TaskWon
+	alreadyTerminal := taskTerminalStatus(w.taskStatus[task.ID])
 	task.FinishedAt = time.Now().UnixNano()
 	if execErr == nil {
 		task.Status = models.TaskDone
@@ -170,61 +160,14 @@ func (w *Worker) processAssignedTask(ctx context.Context, task *models.Task) err
 	}
 	w.mu.Unlock()
 
-	// If Raft already broadcast a terminal event from elsewhere (e.g. a replay),
-	// do not emit a second report — just release and return.
-	if alreadyTerminal {
-		w.ReleaseCS()
-		return nil
-	}
+	return result, execErr, alreadyTerminal
+}
 
-	doneEvent := models.TaskEvent{
-		Type:     models.EventDone,
-		TaskID:   task.ID,
-		WorkerID: w.ID,
-		Result:   result,
-	}
-	if execErr != nil {
-		doneEvent.Type = models.EventFailed
-		doneEvent.Result = ""
-		doneEvent.Reason = execErr.Error()
-	}
-
-	reportErr := w.submitTaskEvent(ctx, doneEvent)
-	if reportErr != nil {
-		// Raft did not durably accept the terminal event — do not finalize locally.
-		// Reset local tracking so the task can be re-enqueued and retried when
-		// the next EventAssigned arrives or the caller re-submits.
-		w.mu.Lock()
-		delete(w.queuedTasks, task.ID)
-		delete(w.taskStatus, task.ID)
-		w.resetTaskCommitStateLocked(task.ID)
-		w.mu.Unlock()
-		w.ReleaseCS()
-		w.mu.Lock()
-		delete(w.queuedTasks, task.ID)
-		delete(w.taskStatus, task.ID)
-		w.resetTaskCommitStateLocked(task.ID)
-		w.mu.Unlock()
-		return reportErr
-	}
-	if err := w.waitForCommittedEvent(ctx, doneEvent); err != nil {
-		w.mu.Lock()
-		delete(w.queuedTasks, task.ID)
-		delete(w.taskStatus, task.ID)
-		w.resetTaskCommitStateLocked(task.ID)
-		w.mu.Unlock()
-		w.ReleaseCS()
-		w.mu.Lock()
-		delete(w.queuedTasks, task.ID)
-		delete(w.taskStatus, task.ID)
-		w.resetTaskCommitStateLocked(task.ID)
-		w.mu.Unlock()
+func (w *Worker) commitTerminalTaskEvent(ctx context.Context, event models.TaskEvent) error {
+	if err := w.submitTaskEvent(ctx, event); err != nil {
 		return err
 	}
-
-	w.markTaskTerminal(doneEvent)
-	w.ReleaseCS()
-	return execErr
+	return w.waitForCommittedEvent(ctx, event)
 }
 
 func (w *Worker) executeTask(ctx context.Context, task *models.Task) (string, error) {
@@ -255,13 +198,10 @@ func (w *Worker) enqueueAssignedTask(task *models.Task) {
 
 	w.mu.Lock()
 	st := w.taskStatus[task.ID]
-	// TaskDone, TaskFailed, and TaskCanceled are permanent — never re-enqueue.
-	if st == models.TaskDone || st == models.TaskFailed || st == models.TaskCanceled {
+	if taskPermanentStatus(st) {
 		w.mu.Unlock()
 		return
 	}
-	// TaskWon means another worker previously won this task ID, but if Raft is
-	// re-assigning it (winner failed, retry), allow re-enqueue by resetting state.
 	if st == models.TaskWon {
 		delete(w.taskStatus, task.ID)
 		delete(w.queuedTasks, task.ID)
@@ -314,7 +254,6 @@ func (w *Worker) markTaskTerminal(event models.TaskEvent) {
 	if w.currentTask != nil && w.currentTask.ID == event.TaskID {
 		switch w.state {
 		case StateWanting:
-			// Still collecting votes — cancel the pending RequestCS.
 			w.csErr = fmt.Errorf("worker %d: task %s already closed by worker %d", w.ID, event.TaskID, event.WorkerID)
 			select {
 			case <-w.csEnter:
@@ -322,7 +261,6 @@ func (w *Worker) markTaskTerminal(event models.TaskEvent) {
 				close(w.csEnter)
 			}
 		case StateHeld:
-			// Already executing — cancel the executor so it stops promptly.
 			if w.execCancel != nil {
 				w.execCancel()
 			}
@@ -331,14 +269,10 @@ func (w *Worker) markTaskTerminal(event models.TaskEvent) {
 	w.mu.Unlock()
 }
 
-// taskTerminal returns true if the task should be dropped from RunTaskLoop.
-// TaskWon counts as suppressed (drop it from the queue) but is not permanently
-// terminal — enqueueAssignedTask can accept the same ID again after a retry.
 func (w *Worker) taskTerminal(taskID string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	st := w.taskStatus[taskID]
-	return st == models.TaskDone || st == models.TaskFailed || st == models.TaskCanceled || st == models.TaskWon
+	return taskTerminalStatus(w.taskStatus[taskID])
 }
 
 func (w *Worker) taskPermanentlyTerminal(taskID string) bool {
@@ -356,6 +290,26 @@ func (w *Worker) clearQueuedTask(taskID string) {
 	}
 	w.resetTaskCommitStateLocked(taskID)
 	w.mu.Unlock()
+}
+
+func (w *Worker) clearQueuedTaskIfContending(taskID string) {
+	if !w.taskTerminal(taskID) {
+		w.clearQueuedTask(taskID)
+	}
+}
+
+func (w *Worker) resetTaskTracking(taskID string) {
+	w.mu.Lock()
+	delete(w.queuedTasks, taskID)
+	delete(w.taskStatus, taskID)
+	w.resetTaskCommitStateLocked(taskID)
+	w.mu.Unlock()
+}
+
+func (w *Worker) releaseAndResetTaskTracking(taskID string) {
+	w.resetTaskTracking(taskID)
+	w.ReleaseCS()
+	w.resetTaskTracking(taskID)
 }
 
 func (w *Worker) recordCommittedEvent(event models.TaskEvent) {
@@ -508,4 +462,23 @@ func taskFromEvent(event models.TaskEvent) *models.Task {
 
 func taskPermanentStatus(status models.TaskStatus) bool {
 	return status == models.TaskDone || status == models.TaskFailed || status == models.TaskCanceled
+}
+
+func taskTerminalStatus(status models.TaskStatus) bool {
+	return taskPermanentStatus(status) || status == models.TaskWon
+}
+
+func terminalEventForTask(task *models.Task, workerID int, result string, execErr error) models.TaskEvent {
+	event := models.TaskEvent{
+		Type:     models.EventDone,
+		TaskID:   task.ID,
+		WorkerID: workerID,
+		Result:   result,
+	}
+	if execErr != nil {
+		event.Type = models.EventFailed
+		event.Result = ""
+		event.Reason = execErr.Error()
+	}
+	return event
 }
