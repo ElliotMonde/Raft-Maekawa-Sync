@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package maekawa;
+
+option go_package = "raft-maekawa/proto/maekawapb;maekawapb";
+
+// Maekawa message type.
+enum MsgType {
+  REQUEST = 0; // worker requests CS entry from quorum members
+  REPLY   = 1; // quorum member grants a vote
+  RELEASE = 2; // worker releases CS, frees the vote
+  INQUIRE = 3; // voter asks current grant holder to yield (deadlock resolution)
+  YIELD   = 4; // grant holder yields back the vote to the voter
+  FAILED  = 5; // voter explicitly rejects a request (e.g. quorum member is going down)
+}
+
+// single message type used for all Maekawa communication
+message MaekawaMsg {
+  MsgType type          = 1;
+  int32   sender_id     = 2; // node ID of the sender
+  int64   clock         = 3; // Lamport timestamp at send time
+  string  task_id       = 4; // which task the CS request is for
+  int64   inquire_clock = 5; // only set in INQUIRE — clock of the grant being questioned
+}
+
+// Ack is the response to every MaekawaMsg
+message Ack {
+  bool ok = 1;
+}
+
+// rpc -> all message types go through Send.
+service MaekawaService {
+  rpc Send(MaekawaMsg) returns (Ack);
+}
