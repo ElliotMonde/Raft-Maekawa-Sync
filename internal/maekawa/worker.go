@@ -19,7 +19,9 @@ type Worker struct {
 
 	ID     int32   // Worker's ID
 	quorum []int32 // IDs of nodes in quorum set
-	Mu sync.Mutex // State for Voting (as a Voter)
+
+	Mu   sync.Mutex // State for Voting (as a Voter), local mutex
+	inCS bool       // whether self is in global CS
 
 	clientMgr *ClientManager
 
@@ -75,5 +77,4 @@ func (w *Worker) HandleRequestLock(ctx context.Context, req *maekawa.LockRequest
 
 }
 
-func (w *Worker) Inquire()
 func (w *Worker) RequestForGlobalLock()

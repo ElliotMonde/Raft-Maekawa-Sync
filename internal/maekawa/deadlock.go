@@ -58,4 +58,23 @@ func (w *Worker) handleYield(ctx context.Context, req *maekawa.YieldRequest) (*m
 	return &maekawa.Empty{}, nil
 }
 
-func (w *Worker) sendGrant(targetId int32)
+func (w *Worker) sendGrant(targetId int32) {
+	targetClient := w.clientMgr.GetClient(targetId)
+	if targetClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+
+	_ = utils.ExecuteWithRetry(ctx, func() error {
+		_, err := targetClient.Grant(ctx, &maekawa.GrantRequest{SenderId: w.ID})
+		return err
+	})
+}
+
+// func (w *Worker) Inquire(ctx context.Context, req *maekawa.InquireRequest) (*maekawa.Empty, error) {
+// 	w.Mu.Lock()
+// 	if !w.inCS && w.currentReq != nil{
+// 		// TODO
+// 	}
+// }

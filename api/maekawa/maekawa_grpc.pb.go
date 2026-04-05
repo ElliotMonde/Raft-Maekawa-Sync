@@ -22,7 +22,8 @@ const (
 	Maekawa_RequestLock_FullMethodName = "/maekawa.Maekawa/RequestLock"
 	Maekawa_ReleaseLock_FullMethodName = "/maekawa.Maekawa/ReleaseLock"
 	Maekawa_Inquire_FullMethodName     = "/maekawa.Maekawa/Inquire"
-	Maekawa_Failed_FullMethodName      = "/maekawa.Maekawa/Failed"
+	Maekawa_Yield_FullMethodName       = "/maekawa.Maekawa/Yield"
+	Maekawa_Grant_FullMethodName       = "/maekawa.Maekawa/Grant"
 )
 
 // MaekawaClient is the client API for Maekawa service.
@@ -31,8 +32,9 @@ const (
 type MaekawaClient interface {
 	RequestLock(ctx context.Context, in *LockRequest, opts ...grpc.CallOption) (*LockResponse, error)
 	ReleaseLock(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*Empty, error)
-	Inquire(ctx context.Context, in *InquireRequest, opts ...grpc.CallOption) (*YieldResponse, error)
-	Failed(ctx context.Context, in *FailedRequest, opts ...grpc.CallOption) (*Empty, error)
+	Inquire(ctx context.Context, in *InquireRequest, opts ...grpc.CallOption) (*Empty, error)
+	Yield(ctx context.Context, in *YieldRequest, opts ...grpc.CallOption) (*Empty, error)
+	Grant(ctx context.Context, in *GrantRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type maekawaClient struct {
@@ -63,9 +65,9 @@ func (c *maekawaClient) ReleaseLock(ctx context.Context, in *ReleaseRequest, opt
 	return out, nil
 }
 
-func (c *maekawaClient) Inquire(ctx context.Context, in *InquireRequest, opts ...grpc.CallOption) (*YieldResponse, error) {
+func (c *maekawaClient) Inquire(ctx context.Context, in *InquireRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(YieldResponse)
+	out := new(Empty)
 	err := c.cc.Invoke(ctx, Maekawa_Inquire_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -73,10 +75,20 @@ func (c *maekawaClient) Inquire(ctx context.Context, in *InquireRequest, opts ..
 	return out, nil
 }
 
-func (c *maekawaClient) Failed(ctx context.Context, in *FailedRequest, opts ...grpc.CallOption) (*Empty, error) {
+func (c *maekawaClient) Yield(ctx context.Context, in *YieldRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
-	err := c.cc.Invoke(ctx, Maekawa_Failed_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Maekawa_Yield_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *maekawaClient) Grant(ctx context.Context, in *GrantRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Maekawa_Grant_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +101,9 @@ func (c *maekawaClient) Failed(ctx context.Context, in *FailedRequest, opts ...g
 type MaekawaServer interface {
 	RequestLock(context.Context, *LockRequest) (*LockResponse, error)
 	ReleaseLock(context.Context, *ReleaseRequest) (*Empty, error)
-	Inquire(context.Context, *InquireRequest) (*YieldResponse, error)
-	Failed(context.Context, *FailedRequest) (*Empty, error)
+	Inquire(context.Context, *InquireRequest) (*Empty, error)
+	Yield(context.Context, *YieldRequest) (*Empty, error)
+	Grant(context.Context, *GrantRequest) (*Empty, error)
 	mustEmbedUnimplementedMaekawaServer()
 }
 
@@ -107,11 +120,14 @@ func (UnimplementedMaekawaServer) RequestLock(context.Context, *LockRequest) (*L
 func (UnimplementedMaekawaServer) ReleaseLock(context.Context, *ReleaseRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseLock not implemented")
 }
-func (UnimplementedMaekawaServer) Inquire(context.Context, *InquireRequest) (*YieldResponse, error) {
+func (UnimplementedMaekawaServer) Inquire(context.Context, *InquireRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Inquire not implemented")
 }
-func (UnimplementedMaekawaServer) Failed(context.Context, *FailedRequest) (*Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method Failed not implemented")
+func (UnimplementedMaekawaServer) Yield(context.Context, *YieldRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method Yield not implemented")
+}
+func (UnimplementedMaekawaServer) Grant(context.Context, *GrantRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method Grant not implemented")
 }
 func (UnimplementedMaekawaServer) mustEmbedUnimplementedMaekawaServer() {}
 func (UnimplementedMaekawaServer) testEmbeddedByValue()                 {}
@@ -188,20 +204,38 @@ func _Maekawa_Inquire_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Maekawa_Failed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(FailedRequest)
+func _Maekawa_Yield_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(YieldRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(MaekawaServer).Failed(ctx, in)
+		return srv.(MaekawaServer).Yield(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: Maekawa_Failed_FullMethodName,
+		FullMethod: Maekawa_Yield_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(MaekawaServer).Failed(ctx, req.(*FailedRequest))
+		return srv.(MaekawaServer).Yield(ctx, req.(*YieldRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Maekawa_Grant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GrantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MaekawaServer).Grant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Maekawa_Grant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MaekawaServer).Grant(ctx, req.(*GrantRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -226,8 +260,12 @@ var Maekawa_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Maekawa_Inquire_Handler,
 		},
 		{
-			MethodName: "Failed",
-			Handler:    _Maekawa_Failed_Handler,
+			MethodName: "Yield",
+			Handler:    _Maekawa_Yield_Handler,
+		},
+		{
+			MethodName: "Grant",
+			Handler:    _Maekawa_Grant_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
