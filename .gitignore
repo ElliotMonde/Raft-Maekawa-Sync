@@ -176,3 +176,5 @@ Temporary Items
 .apdisk
 
 # End of https://mrkandreev.name/snippets/gitignore-generator/#Go,Node,react,macOS
+
+bin/
