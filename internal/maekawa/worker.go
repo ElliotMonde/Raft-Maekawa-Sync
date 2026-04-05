@@ -17,19 +17,21 @@ import (
 type Worker struct {
 	maekawa.UnimplementedMaekawaServer
 
-	ID     int32   // Worker's ID
-	quorum []int32 // IDs of nodes in quorum set
-
-	Mu   sync.Mutex // State for Voting (as a Voter), local mutex
-	inCS bool       // whether self is in global CS
-
+	ID        int32   // Worker's ID
+	quorum    []int32 // IDs of nodes in quorum set
 	clientMgr *ClientManager
 
-	votedFor int32
-	isPinned bool // is inquiring already; prevent multiple inquiry requests simultaneously
+	Mu sync.Mutex // State for Voting (as a Voter), local mutex
 
+	votedFor     int32
 	currentReq   *maekawa.LockRequest
+	isPinned     bool // is inquiring already; prevent multiple inquiry requests simultaneously
 	requestQueue *utils.GenericMinHeap[*maekawa.LockRequest]
+
+	votesReceived int
+	inCS          bool      // whether self is in global CS
+	grantChan     chan bool // signal to enter CS
+
 }
 
 func NewWorker(id int32, quorum []int32) *Worker {
@@ -41,10 +43,11 @@ func NewWorker(id int32, quorum []int32) *Worker {
 
 	heap.Init(h)
 	return &Worker{
-		ID:           id,
-		quorum:       quorum,
-		votedFor:     -1,
-		requestQueue: h,
+		ID:            id,
+		quorum:        quorum,
+		votedFor:      -1,
+		requestQueue:  h,
+		votesReceived: 0,
 	}
 }
 
@@ -69,12 +72,28 @@ func (w *Worker) HandleRequestLock(ctx context.Context, req *maekawa.LockRequest
 		// if yield response true, vote for current req node
 		w.isPinned = true
 		go w.sendInquire(w.votedFor)
-
 	}
 	// append current request to request queue; only release when grant request in HandleYield
 	heap.Push(w.requestQueue, req)
 	return &maekawa.LockResponse{NodeId: w.ID, Granted: false}, nil
 
+}
+
+func (w *Worker) sendGrant(targetID int32) {
+	
+}
+
+func (w *Worker) Grant(ctx context.Context, req *maekawa.GrantRequest) (*maekawa.Empty, error) {
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+
+	w.votesReceived++
+
+	if w.votesReceived == len(w.quorum) {
+		// TODO: trigger logic to enter global CS, e.g. sending signal to channel that RequestForGlobalLock is waiting on
+	}
+
+	return &maekawa.Empty{}, nil
 }
 
 func (w *Worker) RequestForGlobalLock()
