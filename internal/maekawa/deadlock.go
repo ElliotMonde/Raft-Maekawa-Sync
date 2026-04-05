@@ -78,8 +78,9 @@ func (w *Worker) onInquire(msg *maekawapb.MaekawaMsg) []sendFn {
 	clk := w.tick()
 	senderID := msg.SenderId
 	taskID := msg.TaskId
+	inquiredClock := msg.InquireClock
 	return []sendFn{func() error {
-		return w.rpc.SendYield(int(senderID), taskID, clk)
+		return w.rpc.SendYield(int(senderID), taskID, clk, inquiredClock)
 	}}
 }
 
@@ -88,7 +89,7 @@ func (w *Worker) onInquire(msg *maekawapb.MaekawaMsg) []sendFn {
 // priority requester in the wait queue.
 // Must be called under w.mu.
 func (w *Worker) onYield(msg *maekawapb.MaekawaMsg) []sendFn {
-	if !w.voter.inquired {
+	if !w.voter.inquired || w.voter.lockedFor != msg.SenderId || w.voter.lockedClock != msg.InquireClock {
 		return nil
 	}
 	// requeue the yielder's original request

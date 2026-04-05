@@ -109,6 +109,50 @@ func TestTwoWorkersSequential(t *testing.T) {
 	workers[1].ReleaseCS()
 }
 
+// Test 2b: while one worker holds CS, another requester must wait until the
+// current holder releases before it can enter.
+func TestRequesterWaitsUntilCurrentHolderReleases(t *testing.T) {
+	workers, _ := startWorkers(t, 9)
+	defer stopWorkers(workers)
+
+	holder := workers[0]
+	waiter := workers[1]
+
+	if err := holder.RequestCS(context.Background(), makeTask(holder.ID, 200)); err != nil {
+		t.Fatalf("holder RequestCS: %v", err)
+	}
+
+	waiterEntered := make(chan struct{}, 1)
+	waiterErr := make(chan error, 1)
+	go func() {
+		if err := waiter.RequestCS(context.Background(), makeTask(waiter.ID, 200)); err != nil {
+			waiterErr <- err
+			return
+		}
+		waiterEntered <- struct{}{}
+	}()
+
+	select {
+	case err := <-waiterErr:
+		t.Fatalf("waiter RequestCS returned early with error: %v", err)
+	case <-waiterEntered:
+		t.Fatal("waiter entered CS before holder released")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	holder.ReleaseCS()
+
+	select {
+	case err := <-waiterErr:
+		t.Fatalf("waiter RequestCS failed after holder release: %v", err)
+	case <-waiterEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiter did not enter CS after holder released")
+	}
+
+	waiter.ReleaseCS()
+}
+
 // Test 3: two workers simultaneous — only one in CS at a time.
 func TestTwoWorkersMutualExclusion(t *testing.T) {
 	workers, _ := startWorkers(t, 9)
@@ -1737,7 +1781,173 @@ func TestDuplicateReleaseIdempotent(t *testing.T) {
 	w1.ReleaseCS()
 }
 
-// Test 42: stale YIELD (from a previous request round) is ignored — voter does not
+// Test 42: stale RELEASE from an older request round is ignored — a voter must
+// not unlock a newer grant held by the same sender.
+func TestStaleReleaseIgnored(t *testing.T) {
+	workers, _ := startWorkers(t, 9)
+	defer stopWorkers(workers)
+
+	voter := workers[1]
+
+	voter.mu.Lock()
+	voter.voter.locked = true
+	voter.voter.lockedFor = 0
+	voter.voter.lockedClock = 20
+	HeapPush(&voter.voter.waitQueue, &maekawapb.MaekawaMsg{
+		Type:     maekawapb.MsgType_REQUEST,
+		SenderId: 2,
+		Clock:    30,
+		TaskId:   "queued-after-current",
+	})
+	voter.mu.Unlock()
+
+	voter.HandleMessage(&maekawapb.MaekawaMsg{
+		Type:     maekawapb.MsgType_RELEASE,
+		SenderId: 0,
+		Clock:    10,
+		TaskId:   "stale-release",
+	})
+
+	voter.mu.Lock()
+	defer voter.mu.Unlock()
+
+	if !voter.voter.locked {
+		t.Fatal("stale RELEASE unlocked voter")
+	}
+	if voter.voter.lockedFor != 0 {
+		t.Fatalf("stale RELEASE changed lockedFor = %d, want 0", voter.voter.lockedFor)
+	}
+	if voter.voter.lockedClock != 20 {
+		t.Fatalf("stale RELEASE changed lockedClock = %d, want 20", voter.voter.lockedClock)
+	}
+	if got := voter.voter.waitQueue.Len(); got != 1 {
+		t.Fatalf("stale RELEASE changed waitQueue len = %d, want 1", got)
+	}
+}
+
+// Test 43: RELEASE for a requester that is only queued, not currently holding
+// the vote, removes that stale queued request instead of leaving it to be
+// re-granted after the current holder releases.
+func TestReleaseRemovesQueuedStaleRequest(t *testing.T) {
+	workers, _ := startWorkers(t, 9)
+	defer stopWorkers(workers)
+
+	voter := workers[1]
+
+	voter.mu.Lock()
+	voter.voter.locked = true
+	voter.voter.lockedFor = int32(workers[0].ID)
+	voter.voter.lockedClock = 20
+	HeapPush(&voter.voter.waitQueue, &maekawapb.MaekawaMsg{
+		Type:     maekawapb.MsgType_REQUEST,
+		SenderId: int32(workers[2].ID),
+		Clock:    10,
+		TaskId:   "stale-requester",
+	})
+	HeapPush(&voter.voter.waitQueue, &maekawapb.MaekawaMsg{
+		Type:     maekawapb.MsgType_REQUEST,
+		SenderId: int32(workers[3].ID),
+		Clock:    30,
+		TaskId:   "live-waiter",
+	})
+	voter.mu.Unlock()
+
+	// Worker 2 already abandoned the round; its RELEASE should delete only its
+	// queued request and leave the current grant intact.
+	voter.HandleMessage(&maekawapb.MaekawaMsg{
+		Type:     maekawapb.MsgType_RELEASE,
+		SenderId: int32(workers[2].ID),
+		Clock:    10,
+		TaskId:   "stale-requester",
+	})
+
+	voter.mu.Lock()
+	if !voter.voter.locked {
+		voter.mu.Unlock()
+		t.Fatal("queued RELEASE unlocked current holder")
+	}
+	if voter.voter.lockedFor != int32(workers[0].ID) || voter.voter.lockedClock != 20 {
+		gotFor, gotClock := voter.voter.lockedFor, voter.voter.lockedClock
+		voter.mu.Unlock()
+		t.Fatalf("queued RELEASE changed current grant to (%d,%d), want (%d,20)", gotFor, gotClock, workers[0].ID)
+	}
+	if got := voter.voter.waitQueue.Len(); got != 1 {
+		voter.mu.Unlock()
+		t.Fatalf("queued RELEASE left waitQueue len = %d, want 1", got)
+	}
+	voter.mu.Unlock()
+
+	// When the current holder releases, the vote must go to worker 3, not back
+	// to the already-cancelled worker 2.
+	voter.mu.Lock()
+	out := voter.onRelease(&maekawapb.MaekawaMsg{
+		Type:     maekawapb.MsgType_RELEASE,
+		SenderId: int32(workers[0].ID),
+		Clock:    20,
+		TaskId:   "current-holder",
+	})
+	gotFor := voter.voter.lockedFor
+	gotClock := voter.voter.lockedClock
+	voter.mu.Unlock()
+
+	if len(out) != 1 {
+		t.Fatalf("expected one REPLY sendFn after current holder release, got %d", len(out))
+	}
+	if gotFor != int32(workers[3].ID) || gotClock != 30 {
+		t.Fatalf("grant after queued RELEASE went to (%d,%d), want (%d,30)", gotFor, gotClock, workers[3].ID)
+	}
+}
+
+// Test 44: stale YIELD from an older inquired round is ignored — a voter must
+// not requeue/unlock a newer grant held by the same sender.
+func TestStaleYieldCrossRoundIgnored(t *testing.T) {
+	workers, _ := startWorkers(t, 9)
+	defer stopWorkers(workers)
+
+	voter := workers[0]
+
+	voter.mu.Lock()
+	voter.voter.locked = true
+	voter.voter.lockedFor = int32(workers[1].ID)
+	voter.voter.lockedClock = 20
+	voter.voter.inquired = true
+	HeapPush(&voter.voter.waitQueue, &maekawapb.MaekawaMsg{
+		Type:     maekawapb.MsgType_REQUEST,
+		SenderId: int32(workers[2].ID),
+		Clock:    30,
+		TaskId:   "queued-after-current",
+	})
+	voter.mu.Unlock()
+
+	voter.HandleMessage(&maekawapb.MaekawaMsg{
+		Type:         maekawapb.MsgType_YIELD,
+		SenderId:     int32(workers[1].ID),
+		Clock:        99,
+		TaskId:       "stale-yield",
+		InquireClock: 10,
+	})
+
+	voter.mu.Lock()
+	defer voter.mu.Unlock()
+
+	if !voter.voter.locked {
+		t.Fatal("stale YIELD unlocked voter")
+	}
+	if voter.voter.lockedFor != int32(workers[1].ID) {
+		t.Fatalf("stale YIELD changed lockedFor = %d, want %d", voter.voter.lockedFor, workers[1].ID)
+	}
+	if voter.voter.lockedClock != 20 {
+		t.Fatalf("stale YIELD changed lockedClock = %d, want 20", voter.voter.lockedClock)
+	}
+	if !voter.voter.inquired {
+		t.Fatal("stale YIELD cleared inquired flag")
+	}
+	if got := voter.voter.waitQueue.Len(); got != 1 {
+		t.Fatalf("stale YIELD changed waitQueue len = %d, want 1", got)
+	}
+}
+
+// Test 45: stale YIELD (from a previous request round) is ignored — voter does not
 // grant to a non-existent waiter.
 func TestStaleYieldIgnored(t *testing.T) {
 	workers, _ := startWorkers(t, 9)
@@ -1756,10 +1966,11 @@ func TestStaleYieldIgnored(t *testing.T) {
 	// Inject a stale YIELD referencing the old round's task — voter is not currently
 	// in inquired state, so onYield must return nil and leave voter state intact.
 	staleYield := &maekawapb.MaekawaMsg{
-		Type:     maekawapb.MsgType_YIELD,
-		SenderId: int32(workers[1].ID),
-		Clock:    1,
-		TaskId:   task1.ID,
+		Type:         maekawapb.MsgType_YIELD,
+		SenderId:     int32(workers[1].ID),
+		Clock:        1,
+		TaskId:       task1.ID,
+		InquireClock: 1,
 	}
 	w0.HandleMessage(staleYield)
 
@@ -1782,7 +1993,7 @@ func TestStaleYieldIgnored(t *testing.T) {
 	w0.ReleaseCS()
 }
 
-// Test 43: stale FAILED (not in StateWanting) is ignored — no state mutation.
+// Test 46: stale FAILED (not in StateWanting) is ignored — no state mutation.
 func TestStaleFAILEDIgnored(t *testing.T) {
 	workers, _ := startWorkers(t, 9)
 	defer stopWorkers(workers)
@@ -1822,7 +2033,7 @@ func TestStaleFAILEDIgnored(t *testing.T) {
 // Partial membership propagation test
 // -----------------------------------------------------------------------
 
-// Test 44: partial membership propagation — only some workers apply a removal.
+// Test 47: partial membership propagation — only some workers apply a removal.
 // Since regridSafe rejects any removal that would produce an unsafe grid, a partial
 // broadcast of an unsafe removal leaves ALL workers at the same safe membership.
 // Verify: (a) the partial removal is rejected on all workers it reaches, and
@@ -2188,10 +2399,11 @@ func TestDuplicateYieldNoDoubleRequeue(t *testing.T) {
 	HeapPush(&v.voter.waitQueue, req2)
 
 	yield := &maekawapb.MaekawaMsg{
-		Type:     maekawapb.MsgType_YIELD,
-		SenderId: int32(workers[1].ID),
-		Clock:    12,
-		TaskId:   "t1",
+		Type:         maekawapb.MsgType_YIELD,
+		SenderId:     int32(workers[1].ID),
+		Clock:        12,
+		TaskId:       "t1",
+		InquireClock: 3,
 	}
 
 	// First YIELD: valid. Requeues worker 1's request, grants to next (worker 2).

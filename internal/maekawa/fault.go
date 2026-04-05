@@ -55,6 +55,13 @@ func (w *Worker) NotifyWorkerDown(workerID int) {
 		out = w.grantNext("") // taskID unknown; voters use it only for logging
 	}
 
+	// If this worker is the accepted winner currently executing and Raft commits
+	// that it is down, cancel the local executor so task processing unwinds
+	// promptly in tests and in-process demo flows.
+	if workerID == w.ID && w.state == StateHeld && w.execCancel != nil {
+		w.execCancel()
+	}
+
 	// Case 2: we are mid-request and dead worker was in our quorum → cancel.
 	if w.state == StateWanting && workerID != w.ID {
 		inQuorum := false

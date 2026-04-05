@@ -62,12 +62,14 @@ func (r *MaekawaRPC) SendInquire(targetID int, taskID string, clock int64, inqui
 }
 
 // SendYield sends a YIELD to targetID — "yes, take back your vote".
-func (r *MaekawaRPC) SendYield(targetID int, taskID string, clock int64) error {
+// inquiredClock identifies the grant round being yielded back.
+func (r *MaekawaRPC) SendYield(targetID int, taskID string, clock int64, inquiredClock int64) error {
 	return r.client.Send(targetID, &maekawapb.MaekawaMsg{
-		Type:     maekawapb.MsgType_YIELD,
-		SenderId: int32(r.SelfID),
-		Clock:    clock,
-		TaskId:   taskID,
+		Type:         maekawapb.MsgType_YIELD,
+		SenderId:     int32(r.SelfID),
+		Clock:        clock,
+		TaskId:       taskID,
+		InquireClock: inquiredClock,
 	})
 }
 

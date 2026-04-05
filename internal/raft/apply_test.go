@@ -11,12 +11,32 @@ type fakeNotifier struct {
 	up      []int
 	removed []int
 	added   []int
+	assigned []models.TaskEvent
+	done     []models.TaskEvent
+	failed   []models.TaskEvent
+	canceled []models.TaskEvent
 }
 
-func (f *fakeNotifier) NotifyWorkerDown(workerID int)    { f.down = append(f.down, workerID) }
-func (f *fakeNotifier) NotifyWorkerUp(workerID int)      { f.up = append(f.up, workerID) }
-func (f *fakeNotifier) NotifyWorkerRemoved(workerID int) { f.removed = append(f.removed, workerID) }
-func (f *fakeNotifier) NotifyWorkerAdded(workerID int)   { f.added = append(f.added, workerID) }
+func (f *fakeNotifier) ApplyTaskEvent(event models.TaskEvent) {
+	switch event.Type {
+	case models.EventWorkerDown:
+		f.down = append(f.down, event.WorkerID)
+	case models.EventWorkerUp:
+		f.up = append(f.up, event.WorkerID)
+	case models.EventWorkerRemoved:
+		f.removed = append(f.removed, event.WorkerID)
+	case models.EventWorkerAdded:
+		f.added = append(f.added, event.WorkerID)
+	case models.EventAssigned:
+		f.assigned = append(f.assigned, event)
+	case models.EventDone:
+		f.done = append(f.done, event)
+	case models.EventFailed:
+		f.failed = append(f.failed, event)
+	case models.EventCanceled:
+		f.canceled = append(f.canceled, event)
+	}
+}
 
 func TestApplyTaskEventToMaekawa(t *testing.T) {
 	f := &fakeNotifier{}
@@ -44,11 +64,15 @@ func TestApplyTaskEventToMaekawaNilNotifierSafe(t *testing.T) {
 	applyTaskEventToMaekawa(models.TaskEvent{Type: models.EventWorkerDown, WorkerID: 1}, nil)
 }
 
-func TestApplyTaskEventToMaekawaIgnoresNonMembershipEvents(t *testing.T) {
+func TestApplyTaskEventToMaekawaForwardsTaskEvents(t *testing.T) {
 	f := &fakeNotifier{}
 	applyTaskEventToMaekawa(models.TaskEvent{Type: models.EventAssigned, WorkerID: 9}, f)
+	applyTaskEventToMaekawa(models.TaskEvent{Type: models.EventCanceled, WorkerID: 8}, f)
 
-	if len(f.down)+len(f.up)+len(f.removed)+len(f.added) != 0 {
-		t.Fatalf("expected no notifier calls for non-membership event")
+	if len(f.assigned) != 1 || f.assigned[0].WorkerID != 9 {
+		t.Fatalf("assigned calls = %v, want WorkerID 9", f.assigned)
+	}
+	if len(f.canceled) != 1 || f.canceled[0].WorkerID != 8 {
+		t.Fatalf("canceled calls = %v, want WorkerID 8", f.canceled)
 	}
 }

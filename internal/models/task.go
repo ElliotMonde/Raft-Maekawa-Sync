@@ -8,6 +8,11 @@ const (
 	TaskInProgress                   // worker won quorum, executing
 	TaskDone                         // completed successfully
 	TaskFailed                       // worker failed or timed out
+	TaskCanceled                     // requester or scheduler canceled the task
+	TaskWon                          // another worker won; this worker should not compete
+	// TaskWon is intentionally NOT a permanent terminal state: if the winner
+	// subsequently fails and Raft re-assigns the same task ID, enqueueAssignedTask
+	// will accept a new EventAssigned and reset the status to TaskPending.
 )
 
 // task object that is being passed around
@@ -29,9 +34,11 @@ type Task struct {
 type EventType uint8
 
 const (
-	EventAssigned      EventType = iota + 1 // worker won quorum, task started
+	EventAssigned      EventType = iota + 1 // task committed and broadcast to workers
+	EventWon                                // worker won Maekawa CS; Raft accepts before execution starts
 	EventDone                               // worker completed successfully
 	EventFailed                             // worker failed or timed out
+	EventCanceled                           // requester or scheduler canceled the task
 	EventWorkerDown                         // worker crashed, remove from live quorum
 	EventWorkerUp                           // worker recovered, add back to live quorum
 	EventWorkerRemoved                      // worker removed from active membership
@@ -43,6 +50,7 @@ type TaskEvent struct {
 	Type     EventType `json:"type"`
 	TaskID   string    `json:"task_id"`
 	WorkerID int       `json:"worker_id"`
+	Task     *Task     `json:"task,omitempty"`
 	Result   string    `json:"result,omitempty"` // optional output or hash
 	Reason   string    `json:"reason,omitempty"` // why task failed (e.g. "insufficient quorum")
 }

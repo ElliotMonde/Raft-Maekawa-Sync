@@ -53,9 +53,16 @@ type Worker struct {
 	csEnter         chan struct{} // closed when replyCount == neededVotes OR quorum fails
 	csErr           error         // set before closing csEnter on failure; read by RequestCS
 	currentTask     *models.Task
+	execCancel      context.CancelFunc // cancels the running TaskExecutor; nil when not executing
+	taskQueue       chan *models.Task
+	taskStatus      map[string]models.TaskStatus
+	queuedTasks     map[string]bool
+	taskCommits     map[string]*taskCommitState
 	// yieldedTo tracks the (voterID, inquireClock) pairs we already yielded to in
 	// this round, so duplicate INQUIREs with the same clock are ignored.
 	yieldedTo map[int32]int64
+	reporter  TaskEventReporter
+	executor  TaskExecutor
 
 	// voter state
 	voter voterState
@@ -86,6 +93,10 @@ func NewWorker(id, n int, peers map[int]string, listenAddr string) (*Worker, err
 		activeWorkers: active,
 		state:         StateReleased,
 		csEnter:       make(chan struct{}),
+		taskQueue:     make(chan *models.Task, 64),
+		taskStatus:    make(map[string]models.TaskStatus),
+		queuedTasks:   make(map[string]bool),
+		taskCommits:   make(map[string]*taskCommitState),
 		log:           slog.Default().With("worker", id),
 	}
 	w.voter.waitQueue = make(RequestHeap, 0)
@@ -191,6 +202,7 @@ func (w *Worker) RequestCS(ctx context.Context, task *models.Task) error {
 		w.mu.Lock()
 		w.state = StateReleased
 		w.currentTask = nil
+		quorum := append([]int(nil), w.Quorum...)
 		// If we locked our own voter for this request, release it now so
 		// any queued waiter can proceed.
 		out := w.selfReleaseVoterLocked(clk, task.ID)
@@ -198,6 +210,14 @@ func (w *Worker) RequestCS(ctx context.Context, task *models.Task) error {
 		for _, fn := range out {
 			if err := fn(); err != nil {
 				w.log.Warn("ctx-cancel self-release: failed to send REPLY", "err", err)
+			}
+		}
+		for _, peerID := range quorum {
+			if peerID == w.ID {
+				continue
+			}
+			if err := w.rpc.SendRelease(peerID, task.ID, clk); err != nil {
+				w.log.Warn("ctx-cancel: failed to send RELEASE", "to", peerID, "err", err)
 			}
 		}
 		return ctx.Err()
@@ -209,12 +229,21 @@ func (w *Worker) RequestCS(ctx context.Context, task *models.Task) error {
 	if err != nil {
 		w.state = StateReleased
 		w.currentTask = nil
+		quorum := append([]int(nil), w.Quorum...)
 		// Same voter unwind on csErr cancellation.
 		out := w.selfReleaseVoterLocked(clk, task.ID)
 		w.mu.Unlock()
 		for _, fn := range out {
 			if fn2err := fn(); fn2err != nil {
 				w.log.Warn("csErr self-release: failed to send REPLY", "err", fn2err)
+			}
+		}
+		for _, peerID := range quorum {
+			if peerID == w.ID {
+				continue
+			}
+			if sendErr := w.rpc.SendRelease(peerID, task.ID, clk); sendErr != nil {
+				w.log.Warn("csErr: failed to send RELEASE", "to", peerID, "err", sendErr)
 			}
 		}
 		return err
@@ -253,9 +282,9 @@ func (w *Worker) ReleaseCS() {
 	w.state = StateReleased
 	task := w.currentTask
 	w.currentTask = nil
-	clk := w.tick()
 	quorum := w.Quorum
 	reqClock := w.currentReqClock
+	w.tick()
 	// Release our own voter lock inline (no loopback RPC) and collect any
 	// sendFn to deliver REPLY to the next waiter in our voter queue.
 	var selfOut []sendFn
@@ -279,7 +308,7 @@ func (w *Worker) ReleaseCS() {
 		if peerID == w.ID {
 			continue
 		}
-		if err := w.rpc.SendRelease(peerID, task.ID, clk); err != nil {
+		if err := w.rpc.SendRelease(peerID, task.ID, reqClock); err != nil {
 			w.log.Warn("failed to send RELEASE", "to", peerID, "err", err)
 		}
 	}
@@ -360,8 +389,16 @@ func (w *Worker) onReply(_ *maekawapb.MaekawaMsg) []sendFn {
 }
 
 func (w *Worker) onRelease(msg *maekawapb.MaekawaMsg) []sendFn {
-	if !w.voter.locked || w.voter.lockedFor != msg.SenderId {
+	if !w.voter.locked {
+		HeapRemove(&w.voter.waitQueue, msg.SenderId, msg.Clock)
 		return nil
 	}
-	return w.grantNext(msg.TaskId)
+	if w.voter.lockedFor == msg.SenderId && w.voter.lockedClock == msg.Clock {
+		return w.grantNext(msg.TaskId)
+	}
+	// The releaser may already have yielded earlier and still be sitting in this
+	// voter's wait queue. Remove that stale queued request so a later grantNext
+	// cannot hand the vote to a requester that already abandoned the round.
+	HeapRemove(&w.voter.waitQueue, msg.SenderId, msg.Clock)
+	return nil
 }
