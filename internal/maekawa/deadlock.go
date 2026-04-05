@@ -29,52 +29,66 @@ func (w *Worker) sendInquire(targetID int32) {
 	})
 }
 
-func (w *Worker) handleYield(ctx context.Context, req *maekawa.YieldRequest) (*maekawa.Empty, error) {
+func (w *Worker) Inquire(ctx context.Context, req *maekawa.InquireRequest) (*maekawa.Empty, error) {
 	w.Mu.Lock()
+	defer w.Mu.Unlock()
 
-	// Ensure the yielding node is actually the node this worker voted for
+	if !w.inCS {
+		if w.votesReceived > 0 {
+			w.votesReceived--
+		}
+		w.Mu.Unlock()
+		go w.sendYield(req.SenderId)
+		w.Mu.Lock()
+	}
+
+	return &maekawa.Empty{}, nil
+}
+
+func (w *Worker) sendYield(senderID int32) {
+	client := w.clientMgr.GetClient(senderID)
+	if client == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+
+	_ = utils.ExecuteWithRetry(ctx, func() error {
+		_, err := client.Yield(ctx, &maekawa.YieldRequest{
+			SenderId: w.ID,
+		})
+		return err
+	})
+}
+
+func (w *Worker) Yield(ctx context.Context, req *maekawa.YieldRequest) (*maekawa.Empty, error) {
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+
 	if req.SenderId != w.votedFor {
+		// not the correct node that has this node's vote
 		return &maekawa.Empty{}, nil
 	}
 
 	w.votedFor = -1
-	w.currentReq = nil
 	w.isPinned = false
 
-	var next *maekawa.LockRequest
-
-	if w.requestQueue.Len() > 0 {
-		next = heap.Pop(w.requestQueue).(*maekawa.LockRequest)
-		w.votedFor = next.NodeId
-		w.currentReq = next
-	}
-
-	w.Mu.Unlock()
-
-	if next != nil {
+	if next := w.popNextFromHeap(); next != nil {
 		go w.sendGrant(next.NodeId)
 	}
 
 	return &maekawa.Empty{}, nil
 }
 
-func (w *Worker) sendGrant(targetId int32) {
-	targetClient := w.clientMgr.GetClient(targetId)
-	if targetClient == nil {
-		return
+func (w *Worker) popNextFromHeap() *maekawa.LockRequest {
+
+	if w.requestQueue.Len() == 0 {
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
-	defer cancel()
 
-	_ = utils.ExecuteWithRetry(ctx, func() error {
-		_, err := targetClient.Grant(ctx, &maekawa.GrantRequest{SenderId: w.ID})
-		return err
-	})
+	next := heap.Pop(w.requestQueue).(*maekawa.LockRequest)
+	w.votedFor = next.NodeId
+	w.currentReq = next
+	return next
 }
-
-// func (w *Worker) Inquire(ctx context.Context, req *maekawa.InquireRequest) (*maekawa.Empty, error) {
-// 	w.Mu.Lock()
-// 	if !w.inCS && w.currentReq != nil{
-// 		// TODO
-// 	}
-// }
