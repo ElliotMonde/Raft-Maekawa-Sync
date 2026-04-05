@@ -31,16 +31,17 @@ func (w *Worker) sendInquire(targetID int32) {
 
 func (w *Worker) Inquire(ctx context.Context, req *maekawa.InquireRequest) (*maekawa.Empty, error) {
 	w.Mu.Lock()
+	defer w.Mu.Unlock()
 
 	if !w.inCS {
-		w.votesReceived--
+		if w.votesReceived > 0 {
+			w.votesReceived--
+		}
 		w.Mu.Unlock()
-
 		go w.sendYield(req.SenderId)
-		return &maekawa.Empty{}, nil
+		w.Mu.Lock()
 	}
 
-	w.Mu.Unlock()
 	return &maekawa.Empty{}, nil
 }
 
@@ -75,22 +76,6 @@ func (w *Worker) Yield(ctx context.Context, req *maekawa.YieldRequest) (*maekawa
 
 	if next := w.popNextFromHeap(); next != nil {
 		go w.sendGrant(next.NodeId)
-	}
-
-	return &maekawa.Empty{}, nil
-}
-
-func (w *Worker) ReleaseLock(ctx context.Context, req *maekawa.ReleaseRequest) (*maekawa.Empty, error) {
-	w.Mu.Lock()
-	defer w.Mu.Unlock()
-
-	if req.NodeId == w.votedFor {
-		w.votedFor = -1
-		w.currentReq = nil
-
-		if next := w.popNextFromHeap(); next != nil {
-			go w.sendGrant(next.NodeId)
-		}
 	}
 
 	return &maekawa.Empty{}, nil

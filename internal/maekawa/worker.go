@@ -6,6 +6,7 @@ import (
 	"context"
 	"raft-maekawa-sync/api/maekawa"
 	"sync"
+	"time"
 
 	"container/heap"
 	"raft-maekawa-sync/internal/utils"
@@ -48,10 +49,55 @@ func NewWorker(id int32, quorum []int32) *Worker {
 		votedFor:      -1,
 		requestQueue:  h,
 		votesReceived: 0,
+		grantChan:     make(chan bool, 1),
 	}
 }
 
-func (w *Worker) HandleRequestLock(ctx context.Context, req *maekawa.LockRequest) (*maekawa.LockResponse, error) {
+func (w *Worker) RequestForGlobalLock() {
+	w.Mu.Lock()
+	w.votesReceived = 0
+	w.inCS = false
+	currTimestamp := time.Now().UnixNano()
+	w.Mu.Unlock()
+
+	for _, peerID := range w.quorum {
+		go w.sendLockRequest(peerID, currTimestamp)
+	}
+
+	select {
+	case <-w.grantChan: // if have all quorum votes, granted
+		w.Mu.Lock()
+		w.inCS = true
+		w.Mu.Unlock()
+		// TODO: do stuff in CS
+		w.exitGlobalCS()
+	case <-time.After(10 * time.Second):
+		// TODO: Handle timeout/retry if nodes are dead
+	}
+}
+
+func (w *Worker) sendLockRequest(targetID int32, timestamp int64) {
+	client := w.clientMgr.GetClient(targetID)
+	if client == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+
+	_ = utils.ExecuteWithRetry(ctx, func() error {
+		resp, err := client.RequestLock(ctx, &maekawa.LockRequest{
+			NodeId: w.ID, 
+			Timestamp: timestamp,
+		})
+		if err == nil && resp.Granted {
+			w.Grant(ctx, &maekawa.GrantRequest{SenderId: targetID})
+		}
+		return err
+	})
+}
+
+func (w *Worker) RequestLock(ctx context.Context, req *maekawa.LockRequest) (*maekawa.LockResponse, error) {
 	if req.NodeId < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "NodeID cannot be negative")
 	}
@@ -69,7 +115,6 @@ func (w *Worker) HandleRequestLock(ctx context.Context, req *maekawa.LockRequest
 	// if voted for another request, compare timestamps
 	if req.Timestamp < w.currentReq.Timestamp && !w.isPinned {
 		// inquire the voted node, ask to yield
-		// if yield response true, vote for current req node
 		w.isPinned = true
 		go w.sendInquire(w.votedFor)
 	}
@@ -80,7 +125,18 @@ func (w *Worker) HandleRequestLock(ctx context.Context, req *maekawa.LockRequest
 }
 
 func (w *Worker) sendGrant(targetID int32) {
-	
+	client := w.clientMgr.GetClient(targetID)
+	if client == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+
+	_ = utils.ExecuteWithRetry(ctx, func() error {
+		_, err := client.Grant(ctx, &maekawa.GrantRequest{SenderId: w.ID})
+		return err
+	})
 }
 
 func (w *Worker) Grant(ctx context.Context, req *maekawa.GrantRequest) (*maekawa.Empty, error) {
@@ -90,10 +146,53 @@ func (w *Worker) Grant(ctx context.Context, req *maekawa.GrantRequest) (*maekawa
 	w.votesReceived++
 
 	if w.votesReceived == len(w.quorum) {
-		// TODO: trigger logic to enter global CS, e.g. sending signal to channel that RequestForGlobalLock is waiting on
+		select {
+		case w.grantChan <- true: // push signal into channel
+		default: // Grant handler job done regardless
+		}
 	}
 
 	return &maekawa.Empty{}, nil
 }
 
-func (w *Worker) RequestForGlobalLock()
+func (w *Worker) exitGlobalCS() {
+	w.Mu.Lock()
+	w.inCS = false
+	w.votesReceived = 0
+	w.Mu.Unlock()
+
+	for _, peerID := range w.quorum {
+		go w.sendRelease(peerID)
+	}
+}
+func (w *Worker) sendRelease(targetID int32) {
+	client := w.clientMgr.GetClient(targetID)
+	if client == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+
+	_ = utils.ExecuteWithRetry(ctx, func() error {
+		_, err := client.ReleaseLock(ctx, &maekawa.ReleaseRequest{NodeId: w.ID})
+		return err
+	})
+
+}
+
+func (w *Worker) ReleaseLock(ctx context.Context, req *maekawa.ReleaseRequest) (*maekawa.Empty, error) {
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+
+	if req.NodeId == w.votedFor {
+		w.votedFor = -1
+		w.currentReq = nil
+
+		if next := w.popNextFromHeap(); next != nil {
+			go w.sendGrant(next.NodeId)
+		}
+	}
+
+	return &maekawa.Empty{}, nil
+}
