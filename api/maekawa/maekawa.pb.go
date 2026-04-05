@@ -249,6 +249,58 @@ func (x *InquireRequest) GetSenderId() int32 {
 	return 0
 }
 
+type YieldRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SenderId      int32                  `protobuf:"varint,1,opt,name=sender_id,json=senderId,proto3" json:"sender_id,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *YieldRequest) Reset() {
+	*x = YieldRequest{}
+	mi := &file_api_maekawa_maekawa_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *YieldRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*YieldRequest) ProtoMessage() {}
+
+func (x *YieldRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_maekawa_maekawa_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use YieldRequest.ProtoReflect.Descriptor instead.
+func (*YieldRequest) Descriptor() ([]byte, []int) {
+	return file_api_maekawa_maekawa_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *YieldRequest) GetSenderId() int32 {
+	if x != nil {
+		return x.SenderId
+	}
+	return 0
+}
+
+func (x *YieldRequest) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 type YieldResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        int32                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -259,7 +311,7 @@ type YieldResponse struct {
 
 func (x *YieldResponse) Reset() {
 	*x = YieldResponse{}
-	mi := &file_api_maekawa_maekawa_proto_msgTypes[5]
+	mi := &file_api_maekawa_maekawa_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -271,7 +323,7 @@ func (x *YieldResponse) String() string {
 func (*YieldResponse) ProtoMessage() {}
 
 func (x *YieldResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_maekawa_maekawa_proto_msgTypes[5]
+	mi := &file_api_maekawa_maekawa_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -284,7 +336,7 @@ func (x *YieldResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use YieldResponse.ProtoReflect.Descriptor instead.
 func (*YieldResponse) Descriptor() ([]byte, []int) {
-	return file_api_maekawa_maekawa_proto_rawDescGZIP(), []int{5}
+	return file_api_maekawa_maekawa_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *YieldResponse) GetNodeId() int32 {
@@ -310,7 +362,7 @@ type FailedRequest struct {
 
 func (x *FailedRequest) Reset() {
 	*x = FailedRequest{}
-	mi := &file_api_maekawa_maekawa_proto_msgTypes[6]
+	mi := &file_api_maekawa_maekawa_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -322,7 +374,7 @@ func (x *FailedRequest) String() string {
 func (*FailedRequest) ProtoMessage() {}
 
 func (x *FailedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_maekawa_maekawa_proto_msgTypes[6]
+	mi := &file_api_maekawa_maekawa_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -335,7 +387,7 @@ func (x *FailedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FailedRequest.ProtoReflect.Descriptor instead.
 func (*FailedRequest) Descriptor() ([]byte, []int) {
-	return file_api_maekawa_maekawa_proto_rawDescGZIP(), []int{6}
+	return file_api_maekawa_maekawa_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *FailedRequest) GetNodeId() int32 {
@@ -360,7 +412,10 @@ const file_api_maekawa_maekawa_proto_rawDesc = "" +
 	"\x0eReleaseRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\"-\n" +
 	"\x0eInquireRequest\x12\x1b\n" +
-	"\tsender_id\x18\x01 \x01(\x05R\bsenderId\"B\n" +
+	"\tsender_id\x18\x01 \x01(\x05R\bsenderId\"I\n" +
+	"\fYieldRequest\x12\x1b\n" +
+	"\tsender_id\x18\x01 \x01(\x05R\bsenderId\x12\x1c\n" +
+	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"B\n" +
 	"\rYieldResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12\x18\n" +
 	"\ayielded\x18\x02 \x01(\bR\ayielded\"(\n" +
@@ -384,24 +439,25 @@ func file_api_maekawa_maekawa_proto_rawDescGZIP() []byte {
 	return file_api_maekawa_maekawa_proto_rawDescData
 }
 
-var file_api_maekawa_maekawa_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_api_maekawa_maekawa_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_api_maekawa_maekawa_proto_goTypes = []any{
 	(*Empty)(nil),          // 0: maekawa.Empty
 	(*LockRequest)(nil),    // 1: maekawa.LockRequest
 	(*LockResponse)(nil),   // 2: maekawa.LockResponse
 	(*ReleaseRequest)(nil), // 3: maekawa.ReleaseRequest
 	(*InquireRequest)(nil), // 4: maekawa.InquireRequest
-	(*YieldResponse)(nil),  // 5: maekawa.YieldResponse
-	(*FailedRequest)(nil),  // 6: maekawa.FailedRequest
+	(*YieldRequest)(nil),   // 5: maekawa.YieldRequest
+	(*YieldResponse)(nil),  // 6: maekawa.YieldResponse
+	(*FailedRequest)(nil),  // 7: maekawa.FailedRequest
 }
 var file_api_maekawa_maekawa_proto_depIdxs = []int32{
 	1, // 0: maekawa.Maekawa.RequestLock:input_type -> maekawa.LockRequest
 	3, // 1: maekawa.Maekawa.ReleaseLock:input_type -> maekawa.ReleaseRequest
 	4, // 2: maekawa.Maekawa.Inquire:input_type -> maekawa.InquireRequest
-	6, // 3: maekawa.Maekawa.Failed:input_type -> maekawa.FailedRequest
+	7, // 3: maekawa.Maekawa.Failed:input_type -> maekawa.FailedRequest
 	2, // 4: maekawa.Maekawa.RequestLock:output_type -> maekawa.LockResponse
 	0, // 5: maekawa.Maekawa.ReleaseLock:output_type -> maekawa.Empty
-	5, // 6: maekawa.Maekawa.Inquire:output_type -> maekawa.YieldResponse
+	6, // 6: maekawa.Maekawa.Inquire:output_type -> maekawa.YieldResponse
 	0, // 7: maekawa.Maekawa.Failed:output_type -> maekawa.Empty
 	4, // [4:8] is the sub-list for method output_type
 	0, // [0:4] is the sub-list for method input_type
@@ -421,7 +477,7 @@ func file_api_maekawa_maekawa_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_maekawa_maekawa_proto_rawDesc), len(file_api_maekawa_maekawa_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

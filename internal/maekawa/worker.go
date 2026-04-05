@@ -3,44 +3,77 @@
 package maekawa
 
 import (
-	"sync"
 	"context"
 	"raft-maekawa-sync/api/maekawa"
+	"sync"
+
+	"container/heap"
+	"raft-maekawa-sync/internal/utils"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type Worker struct {
 	maekawa.UnimplementedMaekawaServer
 
-	ID int32 // Worker's ID
-	Quorum []int32 // IDs of nodes in quorum set
+	ID     int32   // Worker's ID
+	quorum []int32 // IDs of nodes in quorum set
 	Mu sync.Mutex // State for Voting (as a Voter)
+
+	clientMgr *ClientManager
+
 	votedFor int32
-	CurrentReq *maekawa.LockRequest
-	RequestQueue [] *maekawa.LockRequest
+	isPinned bool // is inquiring already; prevent multiple inquiry requests simultaneously
+
+	currentReq   *maekawa.LockRequest
+	requestQueue *utils.GenericMinHeap[*maekawa.LockRequest]
 }
 
 func NewWorker(id int32, quorum []int32) *Worker {
+	h := utils.NewGenericMinHeap[*maekawa.LockRequest](
+		func(a, b *maekawa.LockRequest) bool {
+			return a.Timestamp < b.Timestamp
+		},
+	)
+
+	heap.Init(h)
 	return &Worker{
-		ID: id,
-		Quorum: quorum,
-		votedFor: -1,
-		RequestQueue: make([]*maekawa.LockRequest, 0),
+		ID:           id,
+		quorum:       quorum,
+		votedFor:     -1,
+		requestQueue: h,
 	}
 }
 
-func (w *Worker) RequestLock(ctx context.Context, req *maekawa.LockRequest) (*maekawa.LockResponse, error) {
+func (w *Worker) HandleRequestLock(ctx context.Context, req *maekawa.LockRequest) (*maekawa.LockResponse, error) {
+	if req.NodeId < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "NodeID cannot be negative")
+	}
+
 	w.Mu.Lock()
-	defer w.Mu.Unlock()
+	defer w.Mu.Unlock() // Unlock even if Panic
 
 	// if hasn't voted any node, vote for request's node
 	if w.votedFor == -1 {
 		w.votedFor = req.NodeId
-		w.CurrentReq = req
+		w.currentReq = req
 		return &maekawa.LockResponse{NodeId: w.ID, Granted: true}, nil
 	}
-	
-	// if voted for another request, append current request to queue
-	w.RequestQueue = append(w.RequestQueue, req)
+
+	// if voted for another request, compare timestamps
+	if req.Timestamp < w.currentReq.Timestamp && !w.isPinned {
+		// inquire the voted node, ask to yield
+		// if yield response true, vote for current req node
+		w.isPinned = true
+		go w.sendInquire(w.votedFor)
+
+	}
+	// append current request to request queue; only release when grant request in HandleYield
+	heap.Push(w.requestQueue, req)
 	return &maekawa.LockResponse{NodeId: w.ID, Granted: false}, nil
 
 }
+
+func (w *Worker) Inquire()
+func (w *Worker) RequestForGlobalLock()

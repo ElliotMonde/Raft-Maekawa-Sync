@@ -30,6 +30,11 @@ message InquireRequest {
     int32 sender_id = 1;
 }
 
+message YieldRequest {
+    int32 sender_id = 1;
+    int64 timestamp = 2;
+}
+
 message YieldResponse {
     int32 node_id = 1;
     bool yielded = 2;
