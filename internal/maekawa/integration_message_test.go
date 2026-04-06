@@ -202,16 +202,15 @@ func TestConcurrentRequestsSafe(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			resp, err := voter.RequestLock(ctx, &maekawapb.LockRequest{
+			_, err := voter.RequestLock(ctx, &maekawapb.LockRequest{
 				NodeId:    senderID,
 				Timestamp: int64(senderID) * 10,
 			})
 			if err != nil {
 				return
 			}
-			if resp.Granted {
-				voter.ReleaseLock(ctx, &maekawapb.ReleaseRequest{NodeId: senderID})
-			}
+			// Always release — if granted, clears the vote; if queued, removes from queue.
+			voter.ReleaseLock(ctx, &maekawapb.ReleaseRequest{NodeId: senderID, Timestamp: int64(senderID) * 10})
 		}(int32(i))
 	}
 	wg.Wait()

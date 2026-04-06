@@ -367,13 +367,18 @@ func TestCSHolderDiesVotersEventuallyRelease(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// W0 "dies" — mark it dead and stop its server.
-	mem.markDown(0)
+	// W0 "dies" — stop its server, mark it dead, then broadcast the membership
+	// change to all remaining workers (simulating what Raft would do for now)
 	workers[0].Stop()
+	mem.markDown(0)
+	newActive := make([]int32, 0, 8)
+	for i := int32(1); i < 9; i++ {
+		newActive = append(newActive, i)
+	}
+	for _, w := range workers[1:] {
+		w.OnMembershipChange(newActive)
+	}
 
-	// W0 held CS and is now dead. The voters that held a GRANT for W0 need
-	// to eventually release — this happens via gRPC timeout on pending calls.
-	// We wait for W4 to succeed (up to the gRPC DefaultTimeout * 2 + buffer).
 	select {
 	case err := <-w4result:
 		if err != nil {
@@ -383,7 +388,7 @@ func TestCSHolderDiesVotersEventuallyRelease(t *testing.T) {
 			workers[4].ReleaseCS()
 			t.Log("W4 correctly won CS after dead CS holder")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("W4 blocked forever — voters did not release after CS holder died")
 	}
 }
@@ -400,8 +405,15 @@ func TestCSHolderDiesNoWaiters(t *testing.T) {
 	}
 
 	// W0 dies while holding CS, no one is waiting.
-	mem.markDown(0)
 	workers[0].Stop()
+	mem.markDown(0)
+	newActive := make([]int32, 0, 8)
+	for i := int32(1); i < 9; i++ {
+		newActive = append(newActive, i)
+	}
+	for _, w := range workers[1:] {
+		w.OnMembershipChange(newActive)
+	}
 
 	// W4's quorum (n=9) = {1,3,4,5,7} — W0 is NOT in it → can proceed normally.
 	task4 := makeTask(4, 0)
@@ -452,9 +464,16 @@ func TestMutualExclusionAfterHolderDies(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// W0 dies holding CS.
-	mem.markDown(0)
+	// W0 dies holding CS — broadcast membership change to simulate Raft notification.
 	workers[0].Stop()
+	mem.markDown(0)
+	newActive := make([]int32, 0, 8)
+	for i := int32(1); i < 9; i++ {
+		newActive = append(newActive, i)
+	}
+	for _, w := range workers[1:] {
+		w.OnMembershipChange(newActive)
+	}
 
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
