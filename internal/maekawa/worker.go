@@ -198,7 +198,7 @@ func (w *Worker) Grant(ctx context.Context, req *maekawapb.GrantRequest) (*maeka
 	w.Mu.Lock()
 	defer w.Mu.Unlock()
 
-	if w.inCS || req.Timestamp != w.ownReqTimestamp {
+	if w.currentReq == nil || w.inCS || req.Timestamp != w.ownReqTimestamp {
 		return &maekawapb.Empty{}, nil
 	}
 
@@ -220,6 +220,7 @@ func (w *Worker) exitGlobalCS() {
 	w.inCS = false
 	w.committed = false
 	w.votesReceived = 0
+	w.ownReqTimestamp = -1
 	w.Mu.Unlock()
 
 	for _, peerID := range w.quorum {

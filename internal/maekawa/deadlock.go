@@ -46,7 +46,7 @@ func (w *Worker) Inquire(ctx context.Context, req *maekawapb.InquireRequest) (*m
 		return &maekawapb.Empty{}, nil
 	}
 
-	if !w.inCS && !w.committed {
+	if !w.inCS && !w.committed && w.votesReceived > 0 {
 		w.votesReceived--
 		shouldYield = true
 	}
