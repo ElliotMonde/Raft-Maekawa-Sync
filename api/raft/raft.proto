@@ -10,6 +10,12 @@ service Raft {
 
     // Leaders call this to send heartbeats or replicate log entries
     rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse);
+
+    //External Task Interface
+    rpc SubmitTask (SubmitTaskRequest) returns (SubmitTaskResponse);
+
+    // Get current lists of active nodes and pending tasks
+    rpc GetState (GetStateRequest) returns (GetStateResponse);
 }
 
 message RequestVoteRequest {
@@ -43,4 +49,35 @@ message LogEntry {
     int32 term = 1;
     int32 index = 2;
     string command = 3;
+}
+
+enum TaskStatus {
+    PENDING = 0;
+    IN_PROGRESS = 1;
+    COMPLETED = 2;
+    FAILED = 3;
+}
+
+message Task {
+    string task_id = 1;
+    string data = 2;
+    TaskStatus status = 3;
+    int32 assigned_to = 4; // Maekawa Node ID handling this task
+}
+
+message SubmitTaskRequest {
+    string data = 1;
+}
+
+message SubmitTaskResponse {
+    bool success = 1;
+    int32 leader_id = 2;
+    string task_id = 3;
+}
+
+message GetStateRequest {}
+
+message GetStateResponse {
+    repeated int32 active_nodes = 1; // For Maekawa Regridding
+    repeated Task tasks = 2; // The Task Queue
 }

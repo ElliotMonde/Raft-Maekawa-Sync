@@ -5,7 +5,7 @@ package maekawa
 import (
 	"container/heap"
 	"context"
-	"raft-maekawa-sync/api/maekawa"
+	maekawapb "raft-maekawa-sync/api/maekawa"
 	"raft-maekawa-sync/internal/utils"
 	"time"
 )
@@ -14,7 +14,7 @@ const (
 	DefaultTimeout = 200 * time.Millisecond
 )
 
-func (w *Worker) sendInquire(targetID int32) {
+func (w *Worker) sendInquire(targetID int32, timestamp int64) {
 	client := w.clientMgr.GetClient(targetID)
 	if client == nil {
 		return
@@ -24,28 +24,37 @@ func (w *Worker) sendInquire(targetID int32) {
 	defer cancel()
 
 	_ = utils.ExecuteWithRetry(ctx, func() error {
-		_, err := client.Inquire(ctx, &maekawa.InquireRequest{SenderId: w.ID})
+		_, err := client.Inquire(ctx, &maekawapb.InquireRequest{
+			SenderId:  w.ID,
+			Timestamp: timestamp,
+		})
 		return err
 	})
 }
 
-func (w *Worker) Inquire(ctx context.Context, req *maekawa.InquireRequest) (*maekawa.Empty, error) {
+func (w *Worker) Inquire(ctx context.Context, req *maekawapb.InquireRequest) (*maekawapb.Empty, error) {
 	w.Mu.Lock()
+	defer w.Mu.Unlock()
+	shouldYield := false
 
-	if w.inCS || w.committed {
-		w.Mu.Unlock()
-		return &maekawa.Empty{}, nil
+	if w.currentReq == nil || req.Timestamp != w.currentReq.Timestamp {
+		return &maekawapb.Empty{}, nil
 	}
 
-	if w.votesReceived > 0 {
-		w.votesReceived--
+	if !w.inCS && !w.committed {
+		if w.votesReceived > 0 {
+			w.votesReceived--
+			shouldYield = true
+		}
 	}
-	w.Mu.Unlock()
-	go w.sendYield(req.SenderId)
-	return &maekawa.Empty{}, nil
+	if shouldYield {
+		go w.sendYield(req.SenderId, req.Timestamp)
+	}
+
+	return &maekawapb.Empty{}, nil
 }
 
-func (w *Worker) sendYield(senderID int32) {
+func (w *Worker) sendYield(senderID int32, timestamp int64) {
 	client := w.clientMgr.GetClient(senderID)
 	if client == nil {
 		return
@@ -55,20 +64,21 @@ func (w *Worker) sendYield(senderID int32) {
 	defer cancel()
 
 	_ = utils.ExecuteWithRetry(ctx, func() error {
-		_, err := client.Yield(ctx, &maekawa.YieldRequest{
+		_, err := client.Yield(ctx, &maekawapb.YieldRequest{
 			SenderId: w.ID,
+			Timestamp: timestamp,
 		})
 		return err
 	})
 }
 
-func (w *Worker) Yield(ctx context.Context, req *maekawa.YieldRequest) (*maekawa.Empty, error) {
+func (w *Worker) Yield(ctx context.Context, req *maekawapb.YieldRequest) (*maekawapb.Empty, error) {
 	w.Mu.Lock()
 	defer w.Mu.Unlock()
 
 	if req.SenderId != w.votedFor {
 		// not the correct node that has this node's vote
-		return &maekawa.Empty{}, nil
+		return &maekawapb.Empty{}, nil
 	}
 
 	w.votedFor = -1
@@ -78,16 +88,16 @@ func (w *Worker) Yield(ctx context.Context, req *maekawa.YieldRequest) (*maekawa
 		go w.sendGrant(next.NodeId)
 	}
 
-	return &maekawa.Empty{}, nil
+	return &maekawapb.Empty{}, nil
 }
 
-func (w *Worker) popNextFromHeap() *maekawa.LockRequest {
+func (w *Worker) popNextFromHeap() *maekawapb.LockRequest {
 
 	if w.requestQueue.Len() == 0 {
 		return nil
 	}
 
-	next := heap.Pop(w.requestQueue).(*maekawa.LockRequest)
+	next := heap.Pop(w.requestQueue).(*maekawapb.LockRequest)
 	w.votedFor = next.NodeId
 	w.currentReq = next
 	return next

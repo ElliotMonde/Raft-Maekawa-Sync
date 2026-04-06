@@ -1,6 +1,3 @@
-// starts visualizer to see nodes interacting in real-time
-package dashboard
+package main
 
-func main() {
-	// ...
-}
+func main() {}
