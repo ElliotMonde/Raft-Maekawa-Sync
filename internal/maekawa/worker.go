@@ -31,89 +31,99 @@ type Worker struct {
 	isPinned     bool // is inquiring already; prevent multiple inquiry requests simultaneously
 	requestQueue *utils.GenericMinHeap[*maekawapb.LockRequest]
 
-	taskQueue chan *models.Task
+	taskQueue     chan *models.Task
 	canceledTasks map[string]bool
-	executor TaskExecutor
+	executor      TaskExecutor
 
-	votesReceived int
-	inCS          bool      // whether self is in global CS
-	committed     bool      // true once all votes received, before CS entry
-	grantChan     chan bool // signal to enter CS
-	clock         int64
+	votesReceived   int
+	inCS            bool      // whether self is in global CS
+	committed       bool      // true once all votes received, before CS entry
+	grantChan       chan bool // signal to enter CS
+	clock           int64
+	ownReqTimestamp int64
 }
 
 func NewWorker(id int32, quorum []int32, membership ClusterMembership) *Worker {
-    h := utils.NewGenericMinHeap[*maekawapb.LockRequest](
-        func(a, b *maekawapb.LockRequest) bool {
-            return a.Timestamp < b.Timestamp
-        },
-    )
-    heap.Init(h)
-    return &Worker{
-        ID:            id,
-        quorum:        quorum,
-        membership:    membership,
-        votedFor:      -1,
-        requestQueue:  h,
-        grantChan:     make(chan bool, 1),
-        taskQueue:     make(chan *models.Task, 64), 
-        canceledTasks: make(map[string]bool),  
-        clientMgr:     NewClientManager(),
-    }
+	h := utils.NewGenericMinHeap[*maekawapb.LockRequest](
+		func(a, b *maekawapb.LockRequest) bool {
+			return a.Timestamp < b.Timestamp
+		},
+	)
+	heap.Init(h)
+	return &Worker{
+		ID:            id,
+		quorum:        quorum,
+		membership:    membership,
+		votedFor:      -1,
+		requestQueue:  h,
+		grantChan:     make(chan bool, 1),
+		taskQueue:     make(chan *models.Task, 64),
+		canceledTasks: make(map[string]bool),
+		clientMgr:     NewClientManager(),
+	}
 }
 
 func (w *Worker) SetTaskExecutor(executor TaskExecutor) {
-    w.Mu.Lock()
-    defer w.Mu.Unlock()
-    w.executor = executor
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+	w.executor = executor
 }
 
 func (w *Worker) RequestForGlobalLock(ctx context.Context) error {
-    w.Mu.Lock()
-    w.votesReceived = 0
-    w.inCS = false
-    w.committed = false
-    currTimestamp := w.tick()
+	w.Mu.Lock()
+	w.votesReceived = 0
+	w.inCS = false
+	w.committed = false
+	currTimestamp := w.tick()
+	w.ownReqTimestamp = currTimestamp
 
-    select { // drain stale signal from previous round
-    case <-w.grantChan:
-    default:
-    }
+	select { // drain stale signal from previous round
+	case <-w.grantChan:
+	default:
+	}
 
-    for _, peerID := range w.quorum {
-        if !w.membership.IsAlive(peerID) {
-            w.Mu.Unlock()
-            return fmt.Errorf("quorum member %d is unreachable", peerID)
-        }
-    }
-    w.Mu.Unlock()
+	for _, peerID := range w.quorum {
+		if !w.membership.IsAlive(peerID) {
+			w.Mu.Unlock()
+			return fmt.Errorf("quorum member %d is unreachable", peerID)
+		}
+	}
+	w.Mu.Unlock()
 
-    for _, peerID := range w.quorum {
-        go w.sendLockRequest(peerID, currTimestamp)
-    }
+	for _, peerID := range w.quorum {
+		go w.sendLockRequest(peerID, currTimestamp)
+	}
 
-    select {
-    case success := <-w.grantChan:
-        if !success {
-            return fmt.Errorf("membership changed during lock acquisition")
-        }
-        w.Mu.Lock()
-        w.inCS = true
-        w.Mu.Unlock()
-        return nil
-    case <-ctx.Done():
-        w.Mu.Lock()
-        w.votesReceived = 0
-        w.committed = false
-        w.Mu.Unlock()
-        for _, peerID := range w.quorum {
-            go w.sendRelease(peerID)
-        }
-        return ctx.Err()
-    }
+	select {
+	case success := <-w.grantChan:
+		if !success {
+			return fmt.Errorf("membership changed during lock acquisition")
+		}
+		w.Mu.Lock()
+		w.inCS = true
+		w.Mu.Unlock()
+		return nil
+	case <-ctx.Done():
+		w.Mu.Lock()
+		w.votesReceived = 0
+		w.committed = false
+		w.Mu.Unlock()
+		for _, peerID := range w.quorum {
+			go w.sendRelease(peerID)
+		}
+		return ctx.Err()
+	}
 }
 
 func (w *Worker) sendLockRequest(targetID int32, timestamp int64) {
+	if targetID == w.ID {
+		resp, _ := w.RequestLock(context.Background(), &maekawapb.LockRequest{NodeId: w.ID, Timestamp: timestamp})
+		if resp.Granted {
+			w.Grant(context.Background(), &maekawapb.GrantRequest{SenderId: w.ID, Timestamp: timestamp})
+		}
+		return
+	}
+
 	client := w.clientMgr.GetClient(targetID)
 	if client == nil {
 		return
@@ -128,7 +138,7 @@ func (w *Worker) sendLockRequest(targetID int32, timestamp int64) {
 			Timestamp: timestamp,
 		})
 		if err == nil && resp.Granted {
-			w.Grant(ctx, &maekawapb.GrantRequest{SenderId: targetID})
+			w.Grant(ctx, &maekawapb.GrantRequest{SenderId: targetID, Timestamp: timestamp})
 		}
 		return err
 	})
@@ -164,7 +174,12 @@ func (w *Worker) RequestLock(ctx context.Context, req *maekawapb.LockRequest) (*
 
 }
 
-func (w *Worker) sendGrant(targetID int32) {
+func (w *Worker) sendGrant(targetID int32, timestamp int64) {
+	if targetID == w.ID {
+		w.Grant(context.Background(), &maekawapb.GrantRequest{SenderId: w.ID, Timestamp: timestamp})
+		return
+	}
+
 	client := w.clientMgr.GetClient(targetID)
 	if client == nil {
 		return
@@ -174,7 +189,7 @@ func (w *Worker) sendGrant(targetID int32) {
 	defer cancel()
 
 	_ = utils.ExecuteWithRetry(ctx, func() error {
-		_, err := client.Grant(ctx, &maekawapb.GrantRequest{SenderId: w.ID})
+		_, err := client.Grant(ctx, &maekawapb.GrantRequest{SenderId: w.ID, Timestamp: timestamp})
 		return err
 	})
 }
@@ -183,7 +198,7 @@ func (w *Worker) Grant(ctx context.Context, req *maekawapb.GrantRequest) (*maeka
 	w.Mu.Lock()
 	defer w.Mu.Unlock()
 
-	if w.currentReq == nil || w.inCS || req.Timestamp != w.currentReq.Timestamp {
+	if w.inCS || req.Timestamp != w.ownReqTimestamp {
 		return &maekawapb.Empty{}, nil
 	}
 
@@ -212,6 +227,11 @@ func (w *Worker) exitGlobalCS() {
 	}
 }
 func (w *Worker) sendRelease(targetID int32) {
+	if targetID == w.ID {
+		w.ReleaseLock(context.Background(), &maekawapb.ReleaseRequest{NodeId: w.ID})
+		return
+	}
+
 	client := w.clientMgr.GetClient(targetID)
 	if client == nil {
 		return
@@ -237,7 +257,7 @@ func (w *Worker) ReleaseLock(ctx context.Context, req *maekawapb.ReleaseRequest)
 		w.isPinned = false
 
 		if next := w.popNextFromHeap(); next != nil {
-			go w.sendGrant(next.NodeId)
+			go w.sendGrant(next.NodeId, next.Timestamp)
 		}
 	}
 

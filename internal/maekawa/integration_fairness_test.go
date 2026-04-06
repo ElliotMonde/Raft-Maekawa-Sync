@@ -1,4 +1,4 @@
-//go:build ignore
+// tests enabled
 package maekawa
 
 import (
@@ -24,14 +24,14 @@ func TestBarrierStart2Workers(t *testing.T) {
 		var wg sync.WaitGroup
 		var inCS int64
 
-		for idx, w := range []*Worker{w0, w1} {
+		for idx, w := range []*testWorker{w0, w1} {
 			wg.Add(1)
 			w := w
 			idx := idx
 			go func() {
 				defer wg.Done()
 				<-start
-				task := makeTask(w.ID, 3600+r*10+idx)
+				task := makeTask(int(w.ID), 3600+r*10+idx)
 				if err := w.RequestCS(context.Background(), task); err != nil {
 					t.Errorf("round %d worker %d RequestCS: %v", r, w.ID, err)
 					return
@@ -68,7 +68,7 @@ func TestBarrierStart9Workers(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				task := makeTask(w.ID, 3700+r*10+w.ID)
+				task := makeTask(int(w.ID), 3700+r*10+int(w.ID))
 				if err := w.RequestCS(context.Background(), task); err != nil {
 					t.Errorf("round %d worker %d RequestCS: %v", r, w.ID, err)
 					return
@@ -87,10 +87,11 @@ func TestBarrierStart9Workers(t *testing.T) {
 	}
 }
 
-// Test 45: repeatedly mark workers down/up while several workers request CS continuously.
-// Mutual exclusion must never be violated.
+// Test 45: repeatedly mark workers down/up while several workers request CS.
+// Mutual exclusion must never be violated. Workers whose quorum has a dead peer
+// will get an error from RequestCS (expected); those who succeed must be exclusive.
 func TestChurnWhileContending(t *testing.T) {
-	workers, _ := startWorkers(t, 9)
+	workers, mem := startWorkers(t, 9)
 	defer stopWorkers(workers)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -106,7 +107,7 @@ func TestChurnWhileContending(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for round := 0; ctx.Err() == nil; round++ {
-				task := makeTask(w.ID, 4500+round)
+				task := makeTask(int(w.ID), 4500+round)
 				reqCtx, reqCancel := context.WithTimeout(ctx, 2*time.Second)
 				err := w.RequestCS(reqCtx, task)
 				reqCancel()
@@ -131,15 +132,9 @@ func TestChurnWhileContending(t *testing.T) {
 		churnTargets := workers[4:]
 		for ctx.Err() == nil {
 			target := churnTargets[rand.Intn(len(churnTargets))]
-			// broadcast down
-			for _, w := range workers[:4] {
-				w.NotifyWorkerDown(target.ID)
-			}
+			mem.markDown(target.ID)
 			time.Sleep(25 * time.Millisecond)
-			// broadcast up
-			for _, w := range workers[:4] {
-				w.NotifyWorkerUp(target.ID)
-			}
+			mem.markUp(target.ID)
 			time.Sleep(25 * time.Millisecond)
 		}
 	}()
@@ -150,7 +145,7 @@ func TestChurnWhileContending(t *testing.T) {
 // Test 46: run many rounds with all 9 workers; verify every worker enters CS at
 // least once (no worker is permanently starved).
 func TestNoStarvation(t *testing.T) {
-	const totalRounds = 45 // 5 rounds per worker minimum if perfectly fair
+	const totalRounds = 45
 	workers, _ := startWorkers(t, 9)
 	defer stopWorkers(workers)
 
@@ -165,7 +160,7 @@ func TestNoStarvation(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for round := 0; round < totalRounds/len(workers)+1; round++ {
-				task := makeTask(w.ID, 4600+round*len(workers)+w.ID)
+				task := makeTask(int(w.ID), 4600+round*len(workers)+int(w.ID))
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				err := w.RequestCS(ctx, task)
 				cancel()

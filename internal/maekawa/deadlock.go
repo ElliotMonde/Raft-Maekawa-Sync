@@ -15,6 +15,11 @@ const (
 )
 
 func (w *Worker) sendInquire(targetID int32, timestamp int64) {
+	if targetID == w.ID {
+		w.Inquire(context.Background(), &maekawapb.InquireRequest{SenderId: w.ID, Timestamp: timestamp})
+		return
+	}
+
 	client := w.clientMgr.GetClient(targetID)
 	if client == nil {
 		return
@@ -42,10 +47,8 @@ func (w *Worker) Inquire(ctx context.Context, req *maekawapb.InquireRequest) (*m
 	}
 
 	if !w.inCS && !w.committed {
-		if w.votesReceived > 0 {
-			w.votesReceived--
-			shouldYield = true
-		}
+		w.votesReceived--
+		shouldYield = true
 	}
 	if shouldYield {
 		go w.sendYield(req.SenderId, req.Timestamp)
@@ -55,6 +58,11 @@ func (w *Worker) Inquire(ctx context.Context, req *maekawapb.InquireRequest) (*m
 }
 
 func (w *Worker) sendYield(senderID int32, timestamp int64) {
+	if senderID == w.ID {
+		w.Yield(context.Background(), &maekawapb.YieldRequest{SenderId: w.ID, Timestamp: timestamp})
+		return
+	}
+
 	client := w.clientMgr.GetClient(senderID)
 	if client == nil {
 		return
@@ -65,7 +73,7 @@ func (w *Worker) sendYield(senderID int32, timestamp int64) {
 
 	_ = utils.ExecuteWithRetry(ctx, func() error {
 		_, err := client.Yield(ctx, &maekawapb.YieldRequest{
-			SenderId: w.ID,
+			SenderId:  w.ID,
 			Timestamp: timestamp,
 		})
 		return err
@@ -85,7 +93,7 @@ func (w *Worker) Yield(ctx context.Context, req *maekawapb.YieldRequest) (*maeka
 	w.isPinned = false
 
 	if next := w.popNextFromHeap(); next != nil {
-		go w.sendGrant(next.NodeId)
+		go w.sendGrant(next.NodeId, next.Timestamp)
 	}
 
 	return &maekawapb.Empty{}, nil
