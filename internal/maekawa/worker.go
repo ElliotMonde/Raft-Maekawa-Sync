@@ -31,6 +31,7 @@ type Worker struct {
 
 	votesReceived int
 	inCS          bool      // whether self is in global CS
+	committed     bool      // true once all votes received, before CS entry
 	grantChan     chan bool // signal to enter CS
 
 }
@@ -49,11 +50,13 @@ func NewWorker(id int32, quorum []int32) *Worker {
 		votedFor:      -1,
 		requestQueue:  h,
 		votesReceived: 0,
+		committed:     false,
 		grantChan:     make(chan bool, 1),
+		clientMgr: new(ClientManager), // TODO: check init client mgr
 	}
 }
 
-func (w *Worker) RequestForGlobalLock() {
+func (w *Worker) RequestForGlobalLock(ctx context.Context) error {
 	w.Mu.Lock()
 	w.votesReceived = 0
 	w.inCS = false
@@ -71,9 +74,17 @@ func (w *Worker) RequestForGlobalLock() {
 		w.Mu.Unlock()
 		// TODO: do stuff in CS
 		w.exitGlobalCS()
-	case <-time.After(10 * time.Second):
-		// TODO: Handle timeout/retry if nodes are dead
+	case <-ctx.Done(): // context expired or cancelled, clean up pending votes
+		w.Mu.Lock()
+		w.votesReceived = 0
+		w.committed = false
+		w.Mu.Unlock()
+		for _, peerID := range w.quorum {
+			go w.sendRelease(peerID)
+		}
+		return ctx.Err()
 	}
+	return nil
 }
 
 func (w *Worker) sendLockRequest(targetID int32, timestamp int64) {
@@ -87,7 +98,7 @@ func (w *Worker) sendLockRequest(targetID int32, timestamp int64) {
 
 	_ = utils.ExecuteWithRetry(ctx, func() error {
 		resp, err := client.RequestLock(ctx, &maekawa.LockRequest{
-			NodeId: w.ID, 
+			NodeId:    w.ID,
 			Timestamp: timestamp,
 		})
 		if err == nil && resp.Granted {
@@ -146,6 +157,7 @@ func (w *Worker) Grant(ctx context.Context, req *maekawa.GrantRequest) (*maekawa
 	w.votesReceived++
 
 	if w.votesReceived == len(w.quorum) {
+		w.committed = true
 		select {
 		case w.grantChan <- true: // push signal into channel
 		default: // Grant handler job done regardless
@@ -158,6 +170,7 @@ func (w *Worker) Grant(ctx context.Context, req *maekawa.GrantRequest) (*maekawa
 func (w *Worker) exitGlobalCS() {
 	w.Mu.Lock()
 	w.inCS = false
+	w.committed = false
 	w.votesReceived = 0
 	w.Mu.Unlock()
 

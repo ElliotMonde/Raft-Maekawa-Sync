@@ -31,17 +31,17 @@ func (w *Worker) sendInquire(targetID int32) {
 
 func (w *Worker) Inquire(ctx context.Context, req *maekawa.InquireRequest) (*maekawa.Empty, error) {
 	w.Mu.Lock()
-	defer w.Mu.Unlock()
 
-	if !w.inCS {
-		if w.votesReceived > 0 {
-			w.votesReceived--
-		}
+	if w.inCS || w.committed {
 		w.Mu.Unlock()
-		go w.sendYield(req.SenderId)
-		w.Mu.Lock()
+		return &maekawa.Empty{}, nil
 	}
 
+	if w.votesReceived > 0 {
+		w.votesReceived--
+	}
+	w.Mu.Unlock()
+	go w.sendYield(req.SenderId)
 	return &maekawa.Empty{}, nil
 }
 
