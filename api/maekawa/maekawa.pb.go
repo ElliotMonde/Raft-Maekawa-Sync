@@ -164,6 +164,7 @@ func (x *LockResponse) GetGranted() bool {
 type ReleaseRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        int32                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -205,9 +206,17 @@ func (x *ReleaseRequest) GetNodeId() int32 {
 	return 0
 }
 
+func (x *ReleaseRequest) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 type InquireRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SenderId      int32                  `protobuf:"varint,1,opt,name=sender_id,json=senderId,proto3" json:"sender_id,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -249,9 +258,17 @@ func (x *InquireRequest) GetSenderId() int32 {
 	return 0
 }
 
+func (x *InquireRequest) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 type YieldRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SenderId      int32                  `protobuf:"varint,1,opt,name=sender_id,json=senderId,proto3" json:"sender_id,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -293,9 +310,17 @@ func (x *YieldRequest) GetSenderId() int32 {
 	return 0
 }
 
+func (x *YieldRequest) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 type GrantRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SenderId      int32                  `protobuf:"varint,1,opt,name=sender_id,json=senderId,proto3" json:"sender_id,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -337,6 +362,13 @@ func (x *GrantRequest) GetSenderId() int32 {
 	return 0
 }
 
+func (x *GrantRequest) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 var File_api_maekawa_maekawa_proto protoreflect.FileDescriptor
 
 const file_api_maekawa_maekawa_proto_rawDesc = "" +
@@ -348,15 +380,19 @@ const file_api_maekawa_maekawa_proto_rawDesc = "" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"A\n" +
 	"\fLockResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12\x18\n" +
-	"\agranted\x18\x02 \x01(\bR\agranted\")\n" +
+	"\agranted\x18\x02 \x01(\bR\agranted\"G\n" +
 	"\x0eReleaseRequest\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\"-\n" +
+	"\anode_id\x18\x01 \x01(\x05R\x06nodeId\x12\x1c\n" +
+	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"K\n" +
 	"\x0eInquireRequest\x12\x1b\n" +
-	"\tsender_id\x18\x01 \x01(\x05R\bsenderId\"+\n" +
+	"\tsender_id\x18\x01 \x01(\x05R\bsenderId\x12\x1c\n" +
+	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"I\n" +
 	"\fYieldRequest\x12\x1b\n" +
-	"\tsender_id\x18\x01 \x01(\x05R\bsenderId\"+\n" +
+	"\tsender_id\x18\x01 \x01(\x05R\bsenderId\x12\x1c\n" +
+	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"I\n" +
 	"\fGrantRequest\x12\x1b\n" +
-	"\tsender_id\x18\x01 \x01(\x05R\bsenderId2\x91\x02\n" +
+	"\tsender_id\x18\x01 \x01(\x05R\bsenderId\x12\x1c\n" +
+	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp2\x91\x02\n" +
 	"\aMaekawa\x12:\n" +
 	"\vRequestLock\x12\x14.maekawa.LockRequest\x1a\x15.maekawa.LockResponse\x126\n" +
 	"\vReleaseLock\x12\x17.maekawa.ReleaseRequest\x1a\x0e.maekawa.Empty\x122\n" +

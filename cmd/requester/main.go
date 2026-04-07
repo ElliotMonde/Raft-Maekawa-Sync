@@ -1,2 +1,4 @@
 // simulates a client's request for a job
-package requester
+package main
+
+func main() {}

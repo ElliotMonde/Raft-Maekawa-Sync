@@ -23,7 +23,7 @@ func IsRetriable(err error) bool {
 		return false
 	}
 	switch st.Code() {
-	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
+	case codes.Unavailable, codes.ResourceExhausted:
 		return true
 	default:
 		return false

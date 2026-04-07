@@ -1,16 +1,17 @@
 package utils
 
 import (
+	"container/heap"
 	"fmt"
 )
 
 type GenericMinHeap[T any] struct {
-	data     []T
+	data []T
 	less func(a, b T) bool
 }
 
 func NewGenericMinHeap[T any](less func(a, b T) bool) *GenericMinHeap[T] {
-	return &GenericMinHeap[T] {
+	return &GenericMinHeap[T]{
 		data: make([]T, 0),
 		less: less,
 	}
@@ -44,4 +45,14 @@ func (h *GenericMinHeap[T]) Pop() any {
 	old[n-1] = zero // Nil out the entry to prevent mem leaks
 	h.data = old[0 : n-1]
 	return item
+}
+
+func (h *GenericMinHeap[T]) RemoveIf(pred func(T) bool) bool {
+	for i, item := range h.data {
+		if pred(item) {
+			heap.Remove(h, i)
+			return true
+		}
+	}
+	return false
 }
