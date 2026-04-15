@@ -38,6 +38,7 @@ message AppendEntriesRequest {
 
     // The actual data/commands to be stored (empty for heartbeat)
     repeated LogEntry entries = 5;
+    int32 leader_commit = 6;
 }
 
 message AppendEntriesResponse {
