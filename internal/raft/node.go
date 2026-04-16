@@ -6,6 +6,7 @@ import (
 
 	raftpb "raft-maekawa-sync/api/raft"
 	"raft-maekawa-sync/internal/models"
+	"google.golang.org/grpc"
 )
 
 type Role int
@@ -59,6 +60,9 @@ type Node struct {
 
 	state   *StateMachine
 	applier TaskEventApplier
+
+	peerConns   map[int32]*grpc.ClientConn
+	peerClients map[int32]raftpb.RaftClient
 }
 
 func NewNode(id int32, addr string, peers map[int32]string, applier TaskEventApplier) *Node {
@@ -82,7 +86,9 @@ func NewNode(id int32, addr string, peers map[int32]string, applier TaskEventApp
 			ActiveWorkers: map[int32]bool{id: true},
 			Tasks:         make(map[string]*TaskRecord),
 		},
-		applier: applier,
+		applier:     applier,
+		peerConns:   make(map[int32]*grpc.ClientConn),
+		peerClients: make(map[int32]raftpb.RaftClient),
 	}
 
 	return n

@@ -76,7 +76,7 @@ func (TaskStatus) EnumDescriptor() ([]byte, []int) {
 type RequestVoteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int32                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
-	CandiateId    int32                  `protobuf:"varint,2,opt,name=candiate_id,json=candiateId,proto3" json:"candiate_id,omitempty"`
+	CandidateId   int32                  `protobuf:"varint,2,opt,name=candidate_id,json=candidateId,proto3" json:"candidate_id,omitempty"`
 	LastLogIndex  int32                  `protobuf:"varint,3,opt,name=last_log_index,json=lastLogIndex,proto3" json:"last_log_index,omitempty"`
 	LastLogTerm   int32                  `protobuf:"varint,4,opt,name=last_log_term,json=lastLogTerm,proto3" json:"last_log_term,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -120,9 +120,9 @@ func (x *RequestVoteRequest) GetTerm() int32 {
 	return 0
 }
 
-func (x *RequestVoteRequest) GetCandiateId() int32 {
+func (x *RequestVoteRequest) GetCandidateId() int32 {
 	if x != nil {
-		return x.CandiateId
+		return x.CandidateId
 	}
 	return 0
 }
@@ -654,11 +654,10 @@ var File_api_raft_raft_proto protoreflect.FileDescriptor
 
 const file_api_raft_raft_proto_rawDesc = "" +
 	"\n" +
-	"\x13api/raft/raft.proto\x12\x04raft\"\x93\x01\n" +
+	"\x13api/raft/raft.proto\x12\x04raft\"\x95\x01\n" +
 	"\x12RequestVoteRequest\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x05R\x04term\x12\x1f\n" +
-	"\vcandiate_id\x18\x02 \x01(\x05R\n" +
-	"candiateId\x12$\n" +
+	"\x04term\x18\x01 \x01(\x05R\x04term\x12!\n" +
+	"\fcandidate_id\x18\x02 \x01(\x05R\vcandidateId\x12$\n" +
 	"\x0elast_log_index\x18\x03 \x01(\x05R\flastLogIndex\x12\"\n" +
 	"\rlast_log_term\x18\x04 \x01(\x05R\vlastLogTerm\"L\n" +
 	"\x13RequestVoteResponse\x12\x12\n" +
