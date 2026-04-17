@@ -132,8 +132,6 @@ func (n *Node) runHeartbeatLoop(ctx context.Context) {
 				n.mu.Unlock()
 				return
 			}
-			term := n.currentTerm
-			leaderID := n.id
 			peerIDs := make([]int32, 0, len(n.peers))
 			for peerID := range n.peers {
 				peerIDs = append(peerIDs, peerID)
@@ -141,24 +139,7 @@ func (n *Node) runHeartbeatLoop(ctx context.Context) {
 			n.mu.Unlock()
 
 			for _, peerID := range peerIDs {
-				go func(pid int32) {
-					client, err := n.getPeerClient(pid)
-					if err != nil {
-						return
-					}
-					resp, err := client.AppendEntries(ctx, &raftpb.AppendEntriesRequest{
-						Term:         term,
-						LeaderId:     leaderID,
-						PrevLogIndex: 0,
-						PrevLogTerm:  0,
-					})
-					if err != nil || resp == nil {
-						return
-					}
-					if resp.Term > term {
-						n.becomeFollower(resp.Term, -1)
-					}
-				}(peerID)
+				go n.replicateToPeer(ctx, peerID)
 			}
 		}
 	}
@@ -234,34 +215,4 @@ func (n *Node) RequestVote(_ context.Context, req *raftpb.RequestVoteRequest) (*
 		Term:        n.currentTerm,
 		VoteGranted: voteGranted,
 	}, nil
-}
-
-func (n *Node) AppendEntries(_ context.Context, req *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
-	n.mu.Lock()
-	if req.Term < n.currentTerm {
-		term := n.currentTerm
-		n.mu.Unlock()
-		return &raftpb.AppendEntriesResponse{Term: term, Success: false}, nil
-	}
-	n.mu.Unlock()
-
-	if req.Term > n.currentTerm {
-		n.becomeFollower(req.Term, req.LeaderId)
-	} else {
-		n.mu.Lock()
-		n.role = Follower
-		n.leaderID = req.LeaderId
-		n.electionReset = time.Now()
-		term := n.currentTerm
-		n.mu.Unlock()
-		return &raftpb.AppendEntriesResponse{Term: term, Success: true}, nil
-	}
-
-	n.mu.Lock()
-	n.role = Follower
-	n.leaderID = req.LeaderId
-	n.electionReset = time.Now()
-	term := n.currentTerm
-	n.mu.Unlock()
-	return &raftpb.AppendEntriesResponse{Term: term, Success: true}, nil
 }
