@@ -47,12 +47,14 @@ func (n *Node) startElection(ctx context.Context) {
 	n.leaderID = -1
 	n.votedFor = n.id
 	n.electionReset = time.Now()
+
 	term := n.currentTerm
 	lastLogIndex := int32(len(n.log))
 	lastLogTerm := int32(0)
 	if lastLogIndex > 0 {
 		lastLogTerm = n.log[lastLogIndex-1].Term
 	}
+
 	peerIDs := make([]int32, 0, len(n.peers))
 	for peerID := range n.peers {
 		peerIDs = append(peerIDs, peerID)
@@ -62,12 +64,13 @@ func (n *Node) startElection(ctx context.Context) {
 
 	votes := 1
 	var votesMu sync.Mutex
-
 	var wg sync.WaitGroup
+
 	for _, peerID := range peerIDs {
 		wg.Add(1)
 		go func(pid int32) {
 			defer wg.Done()
+
 			client, err := n.getPeerClient(pid)
 			if err != nil {
 				return
@@ -79,39 +82,36 @@ func (n *Node) startElection(ctx context.Context) {
 				LastLogIndex: lastLogIndex,
 				LastLogTerm:  lastLogTerm,
 			})
-			if err != nil {
+			if err != nil || resp == nil {
+				return
+			}
+
+			if resp.Term > term {
+				n.becomeFollower(resp.Term, -1)
+				return
+			}
+
+			if !resp.VoteGranted {
+				return
+			}
+
+			votesMu.Lock()
+			votes++
+			currentVotes := votes
+			votesMu.Unlock()
+
+			if currentVotes < majority {
 				return
 			}
 
 			n.mu.Lock()
-			if resp.Term > n.currentTerm {
+			if n.role == Candidate && n.currentTerm == term {
 				n.mu.Unlock()
-				n.becomeFollower(resp.Term, -1)
-				return
-			}
-			if n.role != Candidate || n.currentTerm != term {
-				n.mu.Unlock()
+				n.becomeLeader()
+				go n.runHeartbeatLoop(ctx)
 				return
 			}
 			n.mu.Unlock()
-
-			if resp.VoteGranted {
-				votesMu.Lock()
-				votes++
-				currentVotes := votes
-				votesMu.Unlock()
-
-				if currentVotes >= majority {
-					n.mu.Lock()
-					if n.role == Candidate && n.currentTerm == term {
-						n.mu.Unlock()
-						n.becomeLeader()
-						go n.runHeartbeatLoop(ctx)
-						return
-					}
-					n.mu.Unlock()
-				}
-			}
 		}(peerID)
 	}
 

@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	raftpb "raft-maekawa-sync/api/raft"
@@ -29,9 +30,11 @@ func (n *Node) applyCommittedEntries() {
 		entry := n.log[n.lastApplied-1]
 		event, err := models.DecodeTaskEvent(entry.Command)
 		if err != nil {
+			log.Printf("raft node %d: failed to decode log index %d: %v", n.id, n.lastApplied, err)
 			continue
 		}
 		n.applyEvent(*event)
+		log.Printf("raft node %d: applied %s %s", n.id, event.Type, event.TaskID)
 		applyTaskEventToMaekawa(*event, n.applier)
 	}
 }
