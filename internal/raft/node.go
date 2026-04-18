@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -118,16 +119,24 @@ func (n *Node) majority() int {
 func (n *Node) becomeFollower(term int32, leaderID int32) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	prevRole := n.role
+	prevTerm := n.currentTerm
+	prevLeader := n.leaderID
 	n.role = Follower
 	n.currentTerm = term
 	n.votedFor = -1
 	n.leaderID = leaderID
 	n.electionReset = time.Now()
+	if prevRole != Follower || prevTerm != term || prevLeader != leaderID {
+		log.Printf("raft node %d: became FOLLOWER, leader=%d, term=%d", n.id, leaderID, term)
+	}
 }
 
 func (n *Node) becomeLeader() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	prevRole := n.role
+	prevTerm := n.currentTerm
 	n.role = Leader
 	n.leaderID = n.id
 	n.nextIndex = make(map[int32]int32, len(n.peers))
@@ -136,5 +145,8 @@ func (n *Node) becomeLeader() {
 	for peerID := range n.peers {
 		n.nextIndex[peerID] = next
 		n.matchIndex[peerID] = 0
+	}
+	if prevRole != Leader {
+		log.Printf("raft node %d: became LEADER for term %d", n.id, prevTerm)
 	}
 }
