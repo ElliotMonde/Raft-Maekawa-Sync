@@ -150,3 +150,9 @@ func (n *Node) becomeLeader() {
 		log.Printf("raft node %d: became LEADER for term %d", n.id, prevTerm)
 	}
 }
+
+func (n *Node) SetApplier(applier TaskEventApplier) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.applier = applier
+}

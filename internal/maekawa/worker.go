@@ -80,6 +80,10 @@ func (w *Worker) SetTaskExecutor(executor TaskExecutor) {
 	w.executor = executor
 }
 
+func (w *Worker) InitClients(peers map[int32]string, selfID int32) error {
+	return w.clientMgr.InitClients(peers, selfID)
+}
+
 func (w *Worker) RequestForGlobalLock(ctx context.Context) error {
 	w.Mu.Lock()
 	w.votesReceived = 0
