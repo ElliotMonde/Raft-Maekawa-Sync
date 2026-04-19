@@ -35,6 +35,7 @@ type Worker struct {
 	taskQueue     chan *models.Task
 	canceledTasks map[string]bool
 	executor      TaskExecutor
+	beforeClaim   func(task *models.Task) bool
 
 	votesReceived    int
 	grantsReceived   map[int32]bool // which quorum members have granted us this round
@@ -78,6 +79,18 @@ func (w *Worker) SetTaskExecutor(executor TaskExecutor) {
 	w.Mu.Lock()
 	defer w.Mu.Unlock()
 	w.executor = executor
+}
+
+func (w *Worker) SetBeforeClaimHook(hook func(task *models.Task) bool) {
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+	w.beforeClaim = hook
+}
+
+func (w *Worker) CurrentQuorum() []int32 {
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+	return append([]int32(nil), w.quorum...)
 }
 
 func (w *Worker) InitClients(peers map[int32]string, selfID int32) error {

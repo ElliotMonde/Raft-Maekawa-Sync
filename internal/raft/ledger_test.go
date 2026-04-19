@@ -6,8 +6,8 @@ import (
 	"time"
 
 	raftpb "raft-maekawa-sync/api/raft"
-	"raft-maekawa-sync/internal/rpc"
 	"raft-maekawa-sync/internal/models"
+	"raft-maekawa-sync/internal/rpc"
 )
 
 func TestApplyAssignedEvent(t *testing.T) {
@@ -139,13 +139,13 @@ func TestAppendEntriesConflictTruncate(t *testing.T) {
 	n := NewNode(1, ":5001", nil, nil)
 	n.mu.Lock()
 	n.currentTerm = 2
-	n.log = []raftpb.LogEntry{{Term: 1, Index: 1, Command: "stale"}}
+	n.log = []*raftpb.LogEntry{&raftpb.LogEntry{Term: 1, Index: 1, Command: "stale"}}
 	n.mu.Unlock()
 
 	resp, _ := n.AppendEntries(context.Background(), &raftpb.AppendEntriesRequest{
 		Term: 2, LeaderId: 2,
 		PrevLogIndex: 0, PrevLogTerm: 0,
-		Entries:      []*raftpb.LogEntry{{Term: 2, Index: 1, Command: "correct"}},
+		Entries:      []*raftpb.LogEntry{&raftpb.LogEntry{Term: 2, Index: 1, Command: "correct"}},
 		LeaderCommit: 1,
 	})
 	if !resp.Success {

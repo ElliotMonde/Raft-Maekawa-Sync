@@ -93,6 +93,74 @@ func TestMembershipActiveMembersReflectsEvents(t *testing.T) {
 	}
 }
 
+func TestFollowerForwardsTaskLifecycleToLeader(t *testing.T) {
+	nodes, servers, cancel := startTestCluster(t, 15601)
+	defer cancel()
+	defer stopServers(servers)
+
+	leader := waitForLeader(t, nodes, 4*time.Second)
+	resp, err := leader.SubmitTask(context.Background(), &raftpb.SubmitTaskRequest{Data: "forwarded-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Success {
+		t.Fatal("leader should accept submitted task")
+	}
+
+	var follower *Node
+	for _, n := range nodes {
+		n.mu.Lock()
+		isFollower := n.id != leader.id
+		n.mu.Unlock()
+		if isFollower {
+			follower = n
+			break
+		}
+	}
+	if follower == nil {
+		t.Fatal("expected a follower node")
+	}
+
+	ok, err := follower.ClaimTask(resp.TaskId, follower.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("follower should be able to forward a claim to the leader")
+	}
+
+	if err := follower.ReportTaskSuccess(resp.TaskId, follower.id, "ok"); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		allCompleted := true
+		for _, n := range nodes {
+			stateResp, err := n.GetState(context.Background(), &raftpb.GetStateRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(stateResp.Tasks) != 1 {
+				allCompleted = false
+				break
+			}
+			task := stateResp.Tasks[0]
+			if task.Status != raftpb.TaskStatus_COMPLETED || task.AssignedTo != follower.id {
+				allCompleted = false
+				break
+			}
+		}
+		if allCompleted {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("forwarded task lifecycle did not replicate to all nodes")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 func startTestCluster(t *testing.T, basePort int) ([]*Node, []*rpc.Server, context.CancelFunc) {
 	t.Helper()
 	peers := map[int32]string{

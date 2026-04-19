@@ -4,16 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	raftpb "raft-maekawa-sync/api/raft"
 	"raft-maekawa-sync/internal/models"
 )
 
+const internalSubmitPrefix = "__raft_internal_event__:"
+
 // appendEntry appends a log entry using the node's current term.
 // Caller must hold n.mu.
-func (n *Node) appendEntry(command string) raftpb.LogEntry {
-	entry := raftpb.LogEntry{
+func (n *Node) appendEntry(command string) *raftpb.LogEntry {
+	entry := &raftpb.LogEntry{
 		Term:    n.currentTerm,
 		Index:   int32(len(n.log)) + 1,
 		Command: command,
@@ -22,8 +25,28 @@ func (n *Node) appendEntry(command string) raftpb.LogEntry {
 	return entry
 }
 
+func encodeInternalSubmit(event models.TaskEvent) (string, error) {
+	cmd, err := event.Encode()
+	if err != nil {
+		return "", err
+	}
+	return internalSubmitPrefix + cmd, nil
+}
+
+func decodeInternalSubmit(data string) (models.TaskEvent, bool, error) {
+	if !strings.HasPrefix(data, internalSubmitPrefix) {
+		return models.TaskEvent{}, false, nil
+	}
+	event, err := models.DecodeTaskEvent(strings.TrimPrefix(data, internalSubmitPrefix))
+	if err != nil {
+		return models.TaskEvent{}, true, err
+	}
+	return *event, true, nil
+}
+
 // applyCommittedEntries applies entries in (lastApplied, commitIndex].
-// Caller must hold n.mu.
+// It temporarily releases n.mu before notifying the Maekawa applier to avoid
+// lock inversion when the applier consults Raft-backed membership state.
 func (n *Node) applyCommittedEntries() {
 	for n.lastApplied < n.commitIndex {
 		n.lastApplied++
@@ -35,7 +58,10 @@ func (n *Node) applyCommittedEntries() {
 		}
 		n.applyEvent(*event)
 		log.Printf("raft node %d: applied %s %s", n.id, event.Type, event.TaskID)
-		applyTaskEventToMaekawa(*event, n.applier)
+		applier := n.applier
+		n.mu.Unlock()
+		applyTaskEventToMaekawa(*event, applier)
+		n.mu.Lock()
 	}
 }
 
@@ -138,6 +164,7 @@ func (n *Node) buildGetStateResponse() *raftpb.GetStateResponse {
 func (n *Node) AppendEntries(_ context.Context, req *raftpb.AppendEntriesRequest) (*raftpb.AppendEntriesResponse, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	dirty := false
 
 	if req.Term < n.currentTerm {
 		return &raftpb.AppendEntriesResponse{Term: n.currentTerm, Success: false}, nil
@@ -146,6 +173,7 @@ func (n *Node) AppendEntries(_ context.Context, req *raftpb.AppendEntriesRequest
 	if req.Term > n.currentTerm {
 		n.currentTerm = req.Term
 		n.votedFor = -1
+		dirty = true
 	}
 	n.role = Follower
 	n.leaderID = req.LeaderId
@@ -157,6 +185,8 @@ func (n *Node) AppendEntries(_ context.Context, req *raftpb.AppendEntriesRequest
 		}
 		if n.log[req.PrevLogIndex-1].Term != req.PrevLogTerm {
 			n.log = n.log[:req.PrevLogIndex-1]
+			dirty = true
+			_ = n.persistLocked()
 			return &raftpb.AppendEntriesResponse{Term: n.currentTerm, Success: false}, nil
 		}
 	}
@@ -169,16 +199,18 @@ func (n *Node) AppendEntries(_ context.Context, req *raftpb.AppendEntriesRequest
 				if n.log[localIndex-1].Term != incoming.Term {
 					n.log = n.log[:localIndex-1]
 					for _, e := range req.Entries[i:] {
-						n.log = append(n.log, *e)
+						n.log = append(n.log, e)
 					}
+					dirty = true
 					break
 				}
 				continue
 			}
 
 			for _, e := range req.Entries[i:] {
-				n.log = append(n.log, *e)
+				n.log = append(n.log, e)
 			}
+			dirty = true
 			break
 		}
 	}
@@ -190,6 +222,10 @@ func (n *Node) AppendEntries(_ context.Context, req *raftpb.AppendEntriesRequest
 			n.commitIndex = int32(len(n.log))
 		}
 		n.applyCommittedEntries()
+		dirty = true
+	}
+	if dirty {
+		_ = n.persistLocked()
 	}
 
 	return &raftpb.AppendEntriesResponse{Term: n.currentTerm, Success: true}, nil
@@ -218,8 +254,7 @@ func (n *Node) replicateToPeer(ctx context.Context, peerID int32) {
 	entries := make([]*raftpb.LogEntry, 0)
 	if int(nextIdx) <= len(n.log) {
 		for i := nextIdx - 1; i < int32(len(n.log)); i++ {
-			e := n.log[i]
-			entries = append(entries, &raftpb.LogEntry{Term: e.Term, Index: e.Index, Command: e.Command})
+			entries = append(entries, n.log[i])
 		}
 	}
 	leaderCommit := n.commitIndex
@@ -228,6 +263,7 @@ func (n *Node) replicateToPeer(ctx context.Context, peerID int32) {
 
 	client, err := n.getPeerClient(peerID)
 	if err != nil {
+		go n.notePeerReachability(peerID, false)
 		return
 	}
 
@@ -240,8 +276,10 @@ func (n *Node) replicateToPeer(ctx context.Context, peerID int32) {
 		LeaderCommit: leaderCommit,
 	})
 	if err != nil || resp == nil {
+		go n.notePeerReachability(peerID, false)
 		return
 	}
+	go n.notePeerReachability(peerID, true)
 
 	if resp.Term > term {
 		n.becomeFollower(resp.Term, -1)
@@ -288,33 +326,78 @@ func (n *Node) tryAdvanceCommitIndex() {
 		if count >= majority {
 			n.commitIndex = idx
 			n.applyCommittedEntries()
+			_ = n.persistLocked()
 			return
 		}
 	}
 }
 
-func (n *Node) SubmitTask(ctx context.Context, req *raftpb.SubmitTaskRequest) (*raftpb.SubmitTaskResponse, error) {
+func (n *Node) shouldCommitEventLocked(event models.TaskEvent) bool {
+	switch event.Type {
+	case models.EventAssigned:
+		return event.Task != nil && event.TaskID != ""
+	case models.EventClaimed:
+		task, ok := n.latestTaskRecordLocked(event.TaskID)
+		return ok && task.Status == models.EventAssigned
+	case models.EventDone, models.EventFailed:
+		task, ok := n.latestTaskRecordLocked(event.TaskID)
+		return ok && task.Status == models.EventClaimed && task.AssignedTo == event.WorkerID
+	case models.EventCanceled:
+		task, ok := n.latestTaskRecordLocked(event.TaskID)
+		return ok && task.Status != models.EventDone && task.Status != models.EventFailed
+	case models.EventWorkerUp, models.EventWorkerAdded, models.EventWorkerDown, models.EventWorkerRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+func (n *Node) latestTaskRecordLocked(taskID string) (*TaskRecord, bool) {
+	for i := len(n.log) - 1; i >= 0; i-- {
+		event, err := models.DecodeTaskEvent(n.log[i].Command)
+		if err != nil || event.TaskID != taskID {
+			continue
+		}
+
+		record := &TaskRecord{
+			ID:         taskID,
+			AssignedTo: event.WorkerID,
+			Status:     event.Type,
+		}
+		if event.Task != nil {
+			record.Data = event.Task.Data
+		}
+		switch event.Type {
+		case models.EventDone:
+			record.Result = event.Result
+		case models.EventFailed, models.EventCanceled:
+			record.Reason = event.Reason
+		}
+		return record, true
+	}
+
+	task, ok := n.state.Tasks[taskID]
+	return task, ok
+}
+
+func (n *Node) commitTaskEventAsLeader(ctx context.Context, event models.TaskEvent) (bool, int32, error) {
+	cmd, err := event.Encode()
+	if err != nil {
+		return false, 0, err
+	}
+
 	n.mu.Lock()
 	if n.role != Leader {
 		leaderID := n.leaderID
 		n.mu.Unlock()
-		return &raftpb.SubmitTaskResponse{Success: false, LeaderId: leaderID}, nil
+		return false, leaderID, nil
 	}
-	leaderID := n.id
-	n.mu.Unlock()
-
-	taskID := fmt.Sprintf("task-%d-%d", leaderID, time.Now().UnixNano())
-	event := models.TaskEvent{
-		Type:   models.EventAssigned,
-		TaskID: taskID,
-		Task:   &models.Task{ID: taskID, Data: req.Data},
-	}
-	cmd, err := event.Encode()
-	if err != nil {
-		return nil, err
+	if !n.shouldCommitEventLocked(event) {
+		leaderID := n.id
+		n.mu.Unlock()
+		return false, leaderID, nil
 	}
 
-	n.mu.Lock()
 	n.appendEntry(cmd)
 	newIndex := int32(len(n.log))
 	peerIDs := make([]int32, 0, len(n.peers))
@@ -325,7 +408,14 @@ func (n *Node) SubmitTask(ctx context.Context, req *raftpb.SubmitTaskRequest) (*
 		n.commitIndex = newIndex
 		n.applyCommittedEntries()
 	}
+	leaderID := n.id
+	beforeReplicate := n.beforeReplicate
+	_ = n.persistLocked()
 	n.mu.Unlock()
+
+	if beforeReplicate != nil && !beforeReplicate(event) {
+		return false, leaderID, nil
+	}
 
 	for _, peerID := range peerIDs {
 		go n.replicateToPeer(ctx, peerID)
@@ -335,10 +425,42 @@ func (n *Node) SubmitTask(ctx context.Context, req *raftpb.SubmitTaskRequest) (*
 		n.mu.Lock()
 		leaderHint := n.leaderID
 		n.mu.Unlock()
-		return &raftpb.SubmitTaskResponse{Success: false, LeaderId: leaderHint}, nil
+		return false, leaderHint, nil
 	}
 
-	return &raftpb.SubmitTaskResponse{Success: true, LeaderId: leaderID, TaskId: taskID}, nil
+	return true, leaderID, nil
+}
+
+func (n *Node) SubmitTask(ctx context.Context, req *raftpb.SubmitTaskRequest) (*raftpb.SubmitTaskResponse, error) {
+	event, internal, err := decodeInternalSubmit(req.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	if !internal {
+		n.mu.Lock()
+		taskID := fmt.Sprintf("task-%d-%d", n.id, time.Now().UnixNano())
+		n.mu.Unlock()
+		event = models.TaskEvent{
+			Type:   models.EventAssigned,
+			TaskID: taskID,
+			Task:   &models.Task{ID: taskID, Data: req.Data},
+		}
+	}
+
+	accepted, leaderID, err := n.commitTaskEventAsLeader(ctx, event)
+	if err != nil {
+		return nil, err
+	}
+	taskID := event.TaskID
+	if !accepted {
+		taskID = ""
+	}
+	return &raftpb.SubmitTaskResponse{
+		Success:  accepted,
+		LeaderId: leaderID,
+		TaskId:   taskID,
+	}, nil
 }
 
 func (n *Node) waitForCommit(ctx context.Context, index int32, timeout time.Duration) bool {

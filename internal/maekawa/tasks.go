@@ -32,7 +32,16 @@ func (w *Worker) RunTaskLoop(ctx context.Context) {
 }
 
 func (w *Worker) handleTaskExecution(ctx context.Context, task *models.Task) {
-	if w.executor == nil {
+	w.Mu.Lock()
+	executor := w.executor
+	beforeClaim := w.beforeClaim
+	w.Mu.Unlock()
+
+	if executor == nil {
+		return
+	}
+
+	if beforeClaim != nil && !beforeClaim(task) {
 		return
 	}
 
@@ -50,7 +59,7 @@ func (w *Worker) handleTaskExecution(ctx context.Context, task *models.Task) {
 				execErr = fmt.Errorf("task execution paniced: %v", r)
 			}
 		}()
-		result, execErr = w.executor(ctx, task)
+		result, execErr = executor(ctx, task)
 	}()
 
 	if execErr != nil {

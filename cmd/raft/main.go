@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,6 +21,7 @@ func main() {
 	id := flag.Int("id", 0, "this node's raft id")
 	addr := flag.String("addr", "", "listen address, e.g. 127.0.0.1:5001")
 	peersRaw := flag.String("peers", "", "comma-separated id=addr entries")
+	dataDir := flag.String("data-dir", ".raft-state", "directory for persisted raft state")
 	flag.Parse()
 
 	if *id <= 0 || *addr == "" {
@@ -32,6 +34,9 @@ func main() {
 	}
 
 	node := raft.NewNode(int32(*id), *addr, peers, nil)
+	if err := node.SetStoragePath(filepath.Join(*dataDir, fmt.Sprintf("node-%d.json", *id))); err != nil {
+		log.Fatalf("load raft state: %v", err)
+	}
 	s := rpc.NewServer()
 	raftpb.RegisterRaftServer(s.GRPC(), node)
 	if err := s.Start(*addr); err != nil {

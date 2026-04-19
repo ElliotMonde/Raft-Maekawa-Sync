@@ -60,7 +60,14 @@ func (n *Node) startElection(ctx context.Context) {
 		peerIDs = append(peerIDs, peerID)
 	}
 	majority := (len(n.peers)+1)/2 + 1
+	_ = n.persistLocked()
 	n.mu.Unlock()
+
+	if votes := 1; votes >= majority {
+		n.becomeLeader()
+		go n.runHeartbeatLoop(ctx)
+		return
+	}
 
 	votes := 1
 	var votesMu sync.Mutex
@@ -209,6 +216,9 @@ func (n *Node) RequestVote(_ context.Context, req *raftpb.RequestVoteRequest) (*
 		n.votedFor = req.GetCandidateId()
 		n.electionReset = time.Now()
 		voteGranted = true
+	}
+	if voteGranted {
+		_ = n.persistLocked()
 	}
 
 	return &raftpb.RequestVoteResponse{

@@ -75,7 +75,7 @@ func TestRequestVoteRejectsStaleLog(t *testing.T) {
 	n := NewNode(1, ":5001", nil, nil)
 	n.mu.Lock()
 	n.currentTerm = 2
-	n.log = append(n.log, raftpb.LogEntry{Term: 2, Index: 1, Command: "x"})
+	n.log = append(n.log, &raftpb.LogEntry{Term: 2, Index: 1, Command: "x"})
 	n.mu.Unlock()
 
 	resp, _ := n.RequestVote(context.Background(), &raftpb.RequestVoteRequest{
@@ -182,5 +182,29 @@ func TestHeartbeatPreventsNewElection(t *testing.T) {
 	}
 	if leaders != 1 {
 		t.Fatalf("expected 1 leader after heartbeats, got %d", leaders)
+	}
+}
+
+func TestSingleNodeElectionBecomesLeader(t *testing.T) {
+	n := NewNode(1, "127.0.0.1:16001", nil, nil)
+	n.electionMin = 10 * time.Millisecond
+	n.electionMax = 20 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go n.Run(ctx)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		n.mu.Lock()
+		isLeader := n.role == Leader
+		n.mu.Unlock()
+		if isLeader {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("single node did not become leader")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc"
 	raftpb "raft-maekawa-sync/api/raft"
 	"raft-maekawa-sync/internal/models"
-	"google.golang.org/grpc"
 )
 
 type Role int
@@ -46,7 +46,7 @@ type Node struct {
 
 	currentTerm int32
 	votedFor    int32
-	log         []raftpb.LogEntry
+	log         []*raftpb.LogEntry
 
 	commitIndex int32
 	lastApplied int32
@@ -62,14 +62,24 @@ type Node struct {
 	state   *StateMachine
 	applier TaskEventApplier
 
-	peerConns   map[int32]*grpc.ClientConn
-	peerClients map[int32]raftpb.RaftClient
+	storagePath       string
+	pendingLiveness   map[int32]bool
+	beforeReplicate   func(models.TaskEvent) bool
+	replayedToApplier bool
+	peerConns         map[int32]*grpc.ClientConn
+	peerClients       map[int32]raftpb.RaftClient
 }
 
 func NewNode(id int32, addr string, peers map[int32]string, applier TaskEventApplier) *Node {
 	peersCopy := make(map[int32]string, len(peers))
 	for peerID, peerAddr := range peers {
 		peersCopy[peerID] = peerAddr
+	}
+
+	activeWorkers := make(map[int32]bool, len(peers)+1)
+	activeWorkers[id] = true
+	for peerID := range peersCopy {
+		activeWorkers[peerID] = true
 	}
 
 	n := &Node{
@@ -84,12 +94,13 @@ func NewNode(id int32, addr string, peers map[int32]string, applier TaskEventApp
 		electionMax:   800 * time.Millisecond,
 		heartbeatIntv: 150 * time.Millisecond,
 		state: &StateMachine{
-			ActiveWorkers: map[int32]bool{id: true},
+			ActiveWorkers: activeWorkers,
 			Tasks:         make(map[string]*TaskRecord),
 		},
-		applier:     applier,
-		peerConns:   make(map[int32]*grpc.ClientConn),
-		peerClients: make(map[int32]raftpb.RaftClient),
+		applier:         applier,
+		pendingLiveness: make(map[int32]bool),
+		peerConns:       make(map[int32]*grpc.ClientConn),
+		peerClients:     make(map[int32]raftpb.RaftClient),
 	}
 
 	return n
@@ -127,6 +138,7 @@ func (n *Node) becomeFollower(term int32, leaderID int32) {
 	n.votedFor = -1
 	n.leaderID = leaderID
 	n.electionReset = time.Now()
+	_ = n.persistLocked()
 	if prevRole != Follower || prevTerm != term || prevLeader != leaderID {
 		log.Printf("raft node %d: became FOLLOWER, leader=%d, term=%d", n.id, leaderID, term)
 	}
@@ -155,4 +167,21 @@ func (n *Node) SetApplier(applier TaskEventApplier) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.applier = applier
+	if applier == nil || n.replayedToApplier {
+		return
+	}
+	for idx := int32(0); idx < n.lastApplied; idx++ {
+		event, err := models.DecodeTaskEvent(n.log[idx].Command)
+		if err != nil {
+			continue
+		}
+		applyTaskEventToMaekawa(*event, applier)
+	}
+	n.replayedToApplier = true
+}
+
+func (n *Node) SetBeforeReplicateHook(hook func(event models.TaskEvent) bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.beforeReplicate = hook
 }
