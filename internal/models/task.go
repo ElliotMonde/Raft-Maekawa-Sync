@@ -38,6 +38,7 @@ type TaskEvent struct {
     Task     *Task // non-nil only for EventAssigned
     Result   string // populated for EventDone
     Reason   string // populated for EventFailed and EventCanceled
+    EventUnixNano int64 // wall-clock timestamp used for stale-task recovery
 }
 
 // Encode serialises a TaskEvent for storage in a Raft LogEntry.command field.
