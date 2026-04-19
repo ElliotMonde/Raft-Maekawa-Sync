@@ -75,12 +75,19 @@ func (w *Worker) removeFromLocalQueue(taskID string) {
 	w.canceledTasks[taskID] = true
 }
 
+func (w *Worker) restoreTask(taskID string) {
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+	delete(w.canceledTasks, taskID)
+}
+
 func (w *Worker) ApplyTaskEvent(event models.TaskEvent) {
 	switch event.Type {
 	case models.EventAssigned:
 		if event.Task == nil {
 			return
 		}
+		w.restoreTask(event.Task.ID)
 		// Enqueue newly assigned tasks from the Raft commit stream.
 		select {
 		case w.taskQueue <- event.Task:
@@ -88,11 +95,16 @@ func (w *Worker) ApplyTaskEvent(event models.TaskEvent) {
 			// Keep this non-blocking to avoid stalling Raft apply path.
 		}
 
-	case models.EventWorkerUp, models.EventWorkerDown:
+	case models.EventClaimed:
+		if event.WorkerID != w.ID {
+			w.removeFromLocalQueue(event.TaskID)
+		}
+
+	case models.EventWorkerUp, models.EventWorkerDown, models.EventWorkerAdded, models.EventWorkerRemoved:
 		// Trigger the regridding logic we wrote earlier
 		w.OnMembershipChange(w.membership.ActiveMembers())
 
-	case models.EventDone, models.EventCanceled:
+	case models.EventDone, models.EventFailed, models.EventCanceled:
 		// Optional: Remove this task from your local taskQueue
 		// if it's still sitting there to save some Maekawa messages.
 		w.removeFromLocalQueue(event.TaskID)

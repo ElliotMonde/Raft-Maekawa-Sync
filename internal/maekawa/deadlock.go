@@ -15,6 +15,7 @@ const (
 )
 
 func (w *Worker) sendInquire(targetID int32, timestamp int64) {
+	w.emit("lock_inquire", targetID)
 	if targetID == w.ID {
 		w.Inquire(context.Background(), &maekawapb.InquireRequest{SenderId: w.ID, Timestamp: timestamp})
 		return
@@ -69,6 +70,7 @@ func (w *Worker) Inquire(ctx context.Context, req *maekawapb.InquireRequest) (*m
 }
 
 func (w *Worker) sendYield(senderID int32, timestamp int64) {
+	w.emit("lock_yield", senderID)
 	if senderID == w.ID {
 		w.Yield(context.Background(), &maekawapb.YieldRequest{SenderId: w.ID, Timestamp: timestamp})
 		return
