@@ -31,10 +31,11 @@
 
 ## Docker Cluster
 
-Start the 3-node worker cluster:
+Start the 3-node Raft + 3-node worker cluster:
 
 ```bash
 make docker-up
+# open http://localhost:8080
 ```
 
 Watch logs:
@@ -57,19 +58,19 @@ Submit a task from inside Docker:
 make docker-request DATA="demo-task"
 ```
 
-You can also target a specific container address:
+You can also target a specific Raft container address:
 
 ```bash
-make docker-request RAFT=worker2:5002 DATA="demo-task"
+make docker-request RAFT=raft-node2:5002 DATA="demo-task"
 ```
 
 Check worker health:
 
 ```bash
-docker compose ps
+docker compose -p raft-maekawa-sync ps
 ```
 
-The `requester` service is kept behind the `tools` profile and runs on demand via `docker compose run`.
+The dashboard frontend is served from the `dashboard` container at `http://localhost:8080`. That dashboard also has access to the Docker socket, so the frontend can stop/start worker containers directly.
 
 Stop the cluster:
 
@@ -77,4 +78,4 @@ Stop the cluster:
 make docker-down
 ```
 
-Each worker stores its Raft state in its own Docker volume so restarts preserve state.
+Each Raft node stores its state in its own Docker volume so restarts preserve state.
