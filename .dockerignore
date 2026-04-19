@@ -1,0 +1,10 @@
+.git
+.gocache
+bin
+node_modules
+web/node_modules
+web/dist
+coverage
+dist
+.DS_Store
+*.log

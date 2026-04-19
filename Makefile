@@ -3,7 +3,8 @@ PROTOC ?= $(shell command -v protoc 2>/dev/null || echo protoc)
 BIN_DIR := bin
 
 .PHONY: help fmt test test-maekawa test-raft race race-maekawa race-raft build \
-	build-dashboard build-raft build-requester build-worker proto proto-clean clean
+	build-dashboard build-raft build-requester build-worker docker-up docker-down \
+	docker-logs docker-request proto proto-clean clean
 
 help:
 	@echo "Targets:"
@@ -19,6 +20,10 @@ help:
 	@echo "  make build-raft       - build cmd/raft"
 	@echo "  make build-requester  - build cmd/requester"
 	@echo "  make build-worker     - build cmd/worker"
+	@echo "  make docker-up        - start the 3-node worker cluster with Docker Compose"
+	@echo "  make docker-down      - stop the Docker Compose cluster"
+	@echo "  make docker-logs      - tail Docker Compose logs"
+	@echo "  make docker-request   - submit a task inside Docker (use DATA=... and optional RAFT=workerX:port)"
 	@echo "  make proto            - regenerate protobuf Go files"
 	@echo "  make proto-clean      - remove generated protobuf Go files"
 	@echo "  make clean            - remove built binaries"
@@ -59,6 +64,21 @@ build-requester:
 build-worker:
 	mkdir -p $(BIN_DIR)
 	$(GO) build -o $(BIN_DIR)/worker ./cmd/worker
+
+docker-up:
+	docker compose up --build -d
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f
+
+RAFT ?= worker1:5001
+DATA ?= demo-task
+
+docker-request:
+	docker compose run --rm requester --raft $(RAFT) --data "$(DATA)"
 
 proto:
 	$(PROTOC) \

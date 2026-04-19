@@ -1,0 +1,80 @@
+services:
+  worker1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: raft-maekawa-worker1
+    command:
+      - --id=1
+      - --addr=worker1:5001
+      - --peers=2=worker2:5002,3=worker3:5003
+      - --data-dir=/data
+    ports:
+      - "5001:5001"
+    volumes:
+      - worker1-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z worker1 5001"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  worker2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: raft-maekawa-worker2
+    command:
+      - --id=2
+      - --addr=worker2:5002
+      - --peers=1=worker1:5001,3=worker3:5003
+      - --data-dir=/data
+    ports:
+      - "5002:5002"
+    volumes:
+      - worker2-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z worker2 5002"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  worker3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: raft-maekawa-worker3
+    command:
+      - --id=3
+      - --addr=worker3:5003
+      - --peers=1=worker1:5001,2=worker2:5002
+      - --data-dir=/data
+    ports:
+      - "5003:5003"
+    volumes:
+      - worker3-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z worker3 5003"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  requester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - tools
+    entrypoint: ["/app/bin/requester"]
+    depends_on:
+      - worker1
+      - worker2
+      - worker3
+
+volumes:
+  worker1-data:
+  worker2-data:
+  worker3-data:
