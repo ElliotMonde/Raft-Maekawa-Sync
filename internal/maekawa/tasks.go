@@ -68,6 +68,17 @@ func (w *Worker) removeFromLocalQueue(taskID string) {
 
 func (w *Worker) ApplyTaskEvent(event models.TaskEvent) {
 	switch event.Type {
+	case models.EventAssigned:
+		if event.Task == nil {
+			return
+		}
+		// Enqueue newly assigned tasks from the Raft commit stream.
+		select {
+		case w.taskQueue <- event.Task:
+		default:
+			// Keep this non-blocking to avoid stalling Raft apply path.
+		}
+
 	case models.EventWorkerUp, models.EventWorkerDown:
 		// Trigger the regridding logic we wrote earlier
 		w.OnMembershipChange(w.membership.ActiveMembers())
