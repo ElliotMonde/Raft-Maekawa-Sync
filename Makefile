@@ -1,6 +1,7 @@
 GO ?= $(shell command -v go 2>/dev/null || echo /usr/local/go/bin/go)
 PROTOC ?= $(shell command -v protoc 2>/dev/null || echo protoc)
 BIN_DIR := bin
+DOCKER_PROJECT := raft-maekawa-sync
 
 .PHONY: help fmt test test-maekawa test-raft race race-maekawa race-raft build \
 	build-dashboard build-raft build-requester build-worker docker-up docker-down \
@@ -20,7 +21,7 @@ help:
 	@echo "  make build-raft       - build cmd/raft"
 	@echo "  make build-requester  - build cmd/requester"
 	@echo "  make build-worker     - build cmd/worker"
-	@echo "  make docker-up        - start the 3-node worker cluster with Docker Compose"
+	@echo "  make docker-up        - start the 3-node Raft + 3-node worker cluster with Docker Compose"
 	@echo "  make docker-down      - stop the Docker Compose cluster"
 	@echo "  make docker-logs      - tail Docker Compose logs"
 	@echo "  make docker-request   - submit a task inside Docker (use DATA=... and optional RAFT=workerX:port)"
@@ -66,19 +67,19 @@ build-worker:
 	$(GO) build -o $(BIN_DIR)/worker ./cmd/worker
 
 docker-up:
-	docker compose up --build -d
+	docker compose -p $(DOCKER_PROJECT) up --build -d
 
 docker-down:
-	docker compose down
+	docker compose -p $(DOCKER_PROJECT) down
 
 docker-logs:
-	docker compose logs -f
+	docker compose -p $(DOCKER_PROJECT) logs -f
 
-RAFT ?= worker1:5001
+RAFT ?= raft-node1:5001
 DATA ?= demo-task
 
 docker-request:
-	docker compose run --rm requester --raft $(RAFT) --data "$(DATA)"
+	docker compose -p $(DOCKER_PROJECT) exec worker1 /app/bin/requester --raft $(RAFT) --data "$(DATA)"
 
 proto:
 	$(PROTOC) \
