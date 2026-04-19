@@ -66,6 +66,32 @@ func TestApplyDoneAfterClaimed(t *testing.T) {
 	}
 }
 
+func TestApplyAssignedResetsStaleClaim(t *testing.T) {
+	n := NewNode(1, ":5001", nil, nil)
+	events := []models.TaskEvent{
+		{Type: models.EventAssigned, TaskID: "t1", Task: &models.Task{ID: "t1", Data: "x"}},
+		{Type: models.EventClaimed, TaskID: "t1", WorkerID: 2},
+		{Type: models.EventAssigned, TaskID: "t1", Task: &models.Task{ID: "t1", Data: "x"}},
+	}
+
+	n.mu.Lock()
+	for _, e := range events {
+		cmd, _ := e.Encode()
+		n.appendEntry(cmd)
+	}
+	n.commitIndex = int32(len(events))
+	n.applyCommittedEntries()
+	task := n.state.Tasks["t1"]
+	n.mu.Unlock()
+
+	if task.Status != models.EventAssigned {
+		t.Fatalf("expected reassigned task to be pending, got %s", task.Status)
+	}
+	if task.AssignedTo != 0 {
+		t.Fatalf("expected reassigned task to clear assignee, got %d", task.AssignedTo)
+	}
+}
+
 func TestApplyWorkerUpDown(t *testing.T) {
 	n := NewNode(1, ":5001", nil, nil)
 	events := []models.TaskEvent{
@@ -332,6 +358,99 @@ func TestSubmitTaskLeaderSucceeds(t *testing.T) {
 			t.Fatal("task did not replicate to all nodes in time")
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestRecoverStaleClaimedTaskForDownWorker(t *testing.T) {
+	n := NewNode(1, ":5001", nil, nil)
+	n.taskClaimTimeout = 10 * time.Millisecond
+
+	assigned := models.TaskEvent{
+		Type:          models.EventAssigned,
+		TaskID:        "t1",
+		Task:          &models.Task{ID: "t1", Data: "render_001"},
+		EventUnixNano: time.Now().Add(-50 * time.Millisecond).UnixNano(),
+	}
+	claimed := models.TaskEvent{
+		Type:          models.EventClaimed,
+		TaskID:        "t1",
+		WorkerID:      5,
+		EventUnixNano: time.Now().Add(-50 * time.Millisecond).UnixNano(),
+	}
+
+	n.mu.Lock()
+	n.currentTerm = 1
+	n.role = Leader
+	n.leaderID = n.id
+	for _, e := range []models.TaskEvent{assigned, claimed} {
+		cmd, _ := e.Encode()
+		n.appendEntry(cmd)
+	}
+	n.commitIndex = 2
+	n.applyCommittedEntries()
+	n.state.ActiveWorkers[5] = false
+	n.mu.Unlock()
+
+	n.recoverStaleTasks(context.Background())
+
+	n.mu.Lock()
+	task := n.state.Tasks["t1"]
+	logLen := len(n.log)
+	n.mu.Unlock()
+
+	if logLen != 3 {
+		t.Fatalf("expected recovery to append one entry, got log len %d", logLen)
+	}
+	if task.Status != models.EventAssigned {
+		t.Fatalf("expected task to be requeued, got %s", task.Status)
+	}
+	if task.AssignedTo != 0 {
+		t.Fatalf("expected task assignee to be cleared after recovery, got %d", task.AssignedTo)
+	}
+}
+
+func TestDoesNotRecoverClaimedTaskForLiveWorker(t *testing.T) {
+	n := NewNode(1, ":5001", nil, nil)
+	n.taskClaimTimeout = 10 * time.Millisecond
+
+	assigned := models.TaskEvent{
+		Type:          models.EventAssigned,
+		TaskID:        "t1",
+		Task:          &models.Task{ID: "t1", Data: "render_001"},
+		EventUnixNano: time.Now().Add(-50 * time.Millisecond).UnixNano(),
+	}
+	claimed := models.TaskEvent{
+		Type:          models.EventClaimed,
+		TaskID:        "t1",
+		WorkerID:      5,
+		EventUnixNano: time.Now().Add(-50 * time.Millisecond).UnixNano(),
+	}
+
+	n.mu.Lock()
+	n.currentTerm = 1
+	n.role = Leader
+	n.leaderID = n.id
+	for _, e := range []models.TaskEvent{assigned, claimed} {
+		cmd, _ := e.Encode()
+		n.appendEntry(cmd)
+	}
+	n.commitIndex = 2
+	n.applyCommittedEntries()
+	n.state.ActiveWorkers[5] = true
+	n.mu.Unlock()
+
+	n.recoverStaleTasks(context.Background())
+
+	n.mu.Lock()
+	task := n.state.Tasks["t1"]
+	logLen := len(n.log)
+	n.mu.Unlock()
+
+	if logLen != 2 {
+		t.Fatalf("expected no recovery entry for live worker, got log len %d", logLen)
+	}
+	if task.Status != models.EventClaimed {
+		t.Fatalf("expected task to remain claimed, got %s", task.Status)
 	}
 }
 
