@@ -5,9 +5,10 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/grpc"
 	raftpb "raft-maekawa-sync/api/raft"
 	"raft-maekawa-sync/internal/models"
+
+	"google.golang.org/grpc"
 )
 
 type Role int
@@ -19,12 +20,13 @@ const (
 )
 
 type TaskRecord struct {
-	ID         string
-	Data       string
-	Status     models.EventType
-	AssignedTo int32
-	Result     string
-	Reason     string
+	ID                string
+	Data              string
+	Status            models.EventType
+	AssignedTo        int32
+	Result            string
+	Reason            string
+	UpdatedAtUnixNano int64
 }
 
 type StateMachine struct {
@@ -54,20 +56,26 @@ type Node struct {
 	nextIndex  map[int32]int32
 	matchIndex map[int32]int32
 
-	electionReset time.Time
-	electionMin   time.Duration
-	electionMax   time.Duration
-	heartbeatIntv time.Duration
+	electionReset            time.Time
+	electionMin              time.Duration
+	electionMax              time.Duration
+	heartbeatIntv            time.Duration
+	workerHeartbeatTimeout   time.Duration
+	workerHeartbeatCheckIntv time.Duration
+	taskClaimTimeout         time.Duration
+	taskRecoveryCheckIntv    time.Duration
 
 	state   *StateMachine
 	applier TaskEventApplier
 
-	storagePath       string
-	pendingLiveness   map[int32]bool
-	beforeReplicate   func(models.TaskEvent) bool
-	replayedToApplier bool
-	peerConns         map[int32]*grpc.ClientConn
-	peerClients       map[int32]raftpb.RaftClient
+	storagePath         string
+	pendingLiveness     map[int32]bool
+	beforeReplicate     func(models.TaskEvent) bool
+	replayedToApplier   bool
+	peerConns           map[int32]*grpc.ClientConn
+	peerClients         map[int32]raftpb.RaftClient
+	workerHeartbeats    map[int32]time.Time
+	pendingTaskRecovery map[string]bool
 }
 
 func NewNode(id int32, addr string, peers map[int32]string, applier TaskEventApplier) *Node {
@@ -83,24 +91,30 @@ func NewNode(id int32, addr string, peers map[int32]string, applier TaskEventApp
 	}
 
 	n := &Node{
-		id:            id,
-		addr:          addr,
-		peers:         peersCopy,
-		role:          Follower,
-		leaderID:      -1,
-		votedFor:      -1,
-		electionReset: time.Now(),
-		electionMin:   400 * time.Millisecond,
-		electionMax:   800 * time.Millisecond,
-		heartbeatIntv: 150 * time.Millisecond,
+		id:                       id,
+		addr:                     addr,
+		peers:                    peersCopy,
+		role:                     Follower,
+		leaderID:                 -1,
+		votedFor:                 -1,
+		electionReset:            time.Now(),
+		electionMin:              400 * time.Millisecond,
+		electionMax:              800 * time.Millisecond,
+		heartbeatIntv:            150 * time.Millisecond,
+		workerHeartbeatTimeout:   3 * time.Second,
+		workerHeartbeatCheckIntv: 500 * time.Millisecond,
+		taskClaimTimeout:         4 * time.Second,
+		taskRecoveryCheckIntv:    500 * time.Millisecond,
 		state: &StateMachine{
 			ActiveWorkers: activeWorkers,
 			Tasks:         make(map[string]*TaskRecord),
 		},
-		applier:         applier,
-		pendingLiveness: make(map[int32]bool),
-		peerConns:       make(map[int32]*grpc.ClientConn),
-		peerClients:     make(map[int32]raftpb.RaftClient),
+		applier:             applier,
+		pendingLiveness:     make(map[int32]bool),
+		peerConns:           make(map[int32]*grpc.ClientConn),
+		peerClients:         make(map[int32]raftpb.RaftClient),
+		workerHeartbeats:    make(map[int32]time.Time),
+		pendingTaskRecovery: make(map[string]bool),
 	}
 
 	return n
@@ -165,23 +179,41 @@ func (n *Node) becomeLeader() {
 
 func (n *Node) SetApplier(applier TaskEventApplier) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	n.applier = applier
 	if applier == nil || n.replayedToApplier {
+		n.mu.Unlock()
 		return
 	}
+	events := make([]models.TaskEvent, 0, n.lastApplied)
 	for idx := int32(0); idx < n.lastApplied; idx++ {
 		event, err := models.DecodeTaskEvent(n.log[idx].Command)
 		if err != nil {
 			continue
 		}
-		applyTaskEventToMaekawa(*event, applier)
+		events = append(events, *event)
 	}
 	n.replayedToApplier = true
+	n.mu.Unlock()
+
+	for _, event := range events {
+		applyTaskEventToMaekawa(event, applier)
+	}
 }
 
 func (n *Node) SetBeforeReplicateHook(hook func(event models.TaskEvent) bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.beforeReplicate = hook
+}
+
+func (n *Node) SetManagedWorkers(workerIDs []int32) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	activeWorkers := make(map[int32]bool, len(workerIDs))
+	for _, workerID := range workerIDs {
+		activeWorkers[workerID] = n.state.ActiveWorkers[workerID]
+	}
+	n.state.ActiveWorkers = activeWorkers
+	_ = n.persistLocked()
 }

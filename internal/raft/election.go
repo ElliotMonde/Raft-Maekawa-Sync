@@ -12,6 +12,8 @@ import (
 
 func (n *Node) Run(ctx context.Context) {
 	go n.runElectionTimer(ctx)
+	go n.runWorkerHeartbeatLoop(ctx)
+	go n.runTaskRecoveryLoop(ctx)
 	<-ctx.Done()
 }
 
@@ -65,6 +67,7 @@ func (n *Node) startElection(ctx context.Context) {
 
 	if votes := 1; votes >= majority {
 		n.becomeLeader()
+		n.resetWorkerHeartbeatsForLeadership()
 		go n.runHeartbeatLoop(ctx)
 		return
 	}
@@ -115,6 +118,7 @@ func (n *Node) startElection(ctx context.Context) {
 			if n.role == Candidate && n.currentTerm == term {
 				n.mu.Unlock()
 				n.becomeLeader()
+				n.resetWorkerHeartbeatsForLeadership()
 				go n.runHeartbeatLoop(ctx)
 				return
 			}

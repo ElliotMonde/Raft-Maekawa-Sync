@@ -31,12 +31,12 @@ func (n *Node) IsAlive(id int32) bool {
 }
 
 func (n *Node) ClaimTask(taskID string, workerID int32) (bool, error) {
-	event := models.TaskEvent{Type: models.EventClaimed, TaskID: taskID, WorkerID: workerID}
+	event := models.TaskEvent{Type: models.EventClaimed, TaskID: taskID, WorkerID: workerID, EventUnixNano: time.Now().UnixNano()}
 	return n.commitOrForwardEvent(context.Background(), event)
 }
 
 func (n *Node) ReportTaskSuccess(taskID string, workerID int32, result string) error {
-	event := models.TaskEvent{Type: models.EventDone, TaskID: taskID, WorkerID: workerID, Result: result}
+	event := models.TaskEvent{Type: models.EventDone, TaskID: taskID, WorkerID: workerID, Result: result, EventUnixNano: time.Now().UnixNano()}
 	accepted, err := n.commitOrForwardEvent(context.Background(), event)
 	if err != nil {
 		return err
@@ -48,7 +48,7 @@ func (n *Node) ReportTaskSuccess(taskID string, workerID int32, result string) e
 }
 
 func (n *Node) ReportTaskFailure(taskID string, workerID int32, reason string) error {
-	event := models.TaskEvent{Type: models.EventFailed, TaskID: taskID, WorkerID: workerID, Reason: reason}
+	event := models.TaskEvent{Type: models.EventFailed, TaskID: taskID, WorkerID: workerID, Reason: reason, EventUnixNano: time.Now().UnixNano()}
 	accepted, err := n.commitOrForwardEvent(context.Background(), event)
 	if err != nil {
 		return err
@@ -142,6 +142,10 @@ func (n *Node) notePeerReachability(peerID int32, alive bool) {
 		return
 	}
 
+	n.noteWorkerReachability(peerID, alive)
+}
+
+func (n *Node) noteWorkerReachability(workerID int32, alive bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -150,26 +154,30 @@ func (n *Node) notePeerReachability(peerID int32, alive bool) {
 		n.mu.Unlock()
 		return
 	}
-	current := n.state.ActiveWorkers[peerID]
+	current, tracked := n.state.ActiveWorkers[workerID]
+	if !tracked {
+		n.mu.Unlock()
+		return
+	}
 	if current == alive {
 		n.mu.Unlock()
 		return
 	}
-	if pending, ok := n.pendingLiveness[peerID]; ok && pending == alive {
+	if pending, ok := n.pendingLiveness[workerID]; ok && pending == alive {
 		n.mu.Unlock()
 		return
 	}
-	n.pendingLiveness[peerID] = alive
+	n.pendingLiveness[workerID] = alive
 	n.mu.Unlock()
 
 	eventType := models.EventWorkerDown
 	if alive {
 		eventType = models.EventWorkerUp
 	}
-	_, err := n.commitOrForwardEvent(ctx, models.TaskEvent{Type: eventType, WorkerID: peerID})
+	_, err := n.commitOrForwardEvent(ctx, models.TaskEvent{Type: eventType, WorkerID: workerID, EventUnixNano: time.Now().UnixNano()})
 
 	n.mu.Lock()
-	delete(n.pendingLiveness, peerID)
+	delete(n.pendingLiveness, workerID)
 	n.mu.Unlock()
 
 	if err != nil {

@@ -13,6 +13,13 @@ import (
 
 const internalSubmitPrefix = "__raft_internal_event__:"
 
+func eventUnixNano(event models.TaskEvent) int64 {
+	if event.EventUnixNano > 0 {
+		return event.EventUnixNano
+	}
+	return time.Now().UnixNano()
+}
+
 // appendEntry appends a log entry using the node's current term.
 // Caller must hold n.mu.
 func (n *Node) appendEntry(command string) *raftpb.LogEntry {
@@ -68,16 +75,20 @@ func (n *Node) applyCommittedEntries() {
 // applyEvent mutates the in-memory state machine for one committed event.
 // Caller must hold n.mu.
 func (n *Node) applyEvent(event models.TaskEvent) {
+	updatedAt := eventUnixNano(event)
+
 	switch event.Type {
 	case models.EventAssigned:
 		record := &TaskRecord{
 			ID:     event.TaskID,
 			Status: models.EventAssigned,
+			UpdatedAtUnixNano: updatedAt,
 		}
 		if event.Task != nil {
 			record.Data = event.Task.Data
 		}
 		n.state.Tasks[event.TaskID] = record
+		delete(n.pendingTaskRecovery, event.TaskID)
 
 	case models.EventClaimed:
 		record, ok := n.state.Tasks[event.TaskID]
@@ -87,6 +98,9 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 		}
 		record.AssignedTo = event.WorkerID
 		record.Status = models.EventClaimed
+		record.Result = ""
+		record.Reason = ""
+		record.UpdatedAtUnixNano = updatedAt
 
 	case models.EventDone:
 		record, ok := n.state.Tasks[event.TaskID]
@@ -96,6 +110,8 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 		}
 		record.Status = models.EventDone
 		record.Result = event.Result
+		record.UpdatedAtUnixNano = updatedAt
+		delete(n.pendingTaskRecovery, event.TaskID)
 
 	case models.EventFailed:
 		record, ok := n.state.Tasks[event.TaskID]
@@ -105,6 +121,8 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 		}
 		record.Status = models.EventFailed
 		record.Reason = event.Reason
+		record.UpdatedAtUnixNano = updatedAt
+		delete(n.pendingTaskRecovery, event.TaskID)
 
 	case models.EventCanceled:
 		record, ok := n.state.Tasks[event.TaskID]
@@ -114,6 +132,8 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 		}
 		record.Status = models.EventCanceled
 		record.Reason = event.Reason
+		record.UpdatedAtUnixNano = updatedAt
+		delete(n.pendingTaskRecovery, event.TaskID)
 
 	case models.EventWorkerUp, models.EventWorkerAdded:
 		n.state.ActiveWorkers[event.WorkerID] = true
@@ -156,6 +176,22 @@ func (n *Node) buildGetStateResponse() *raftpb.GetStateResponse {
 			Status:     status,
 			AssignedTo: task.AssignedTo,
 		})
+	}
+
+	roleStr := "follower"
+	switch n.role {
+	case Leader:
+		roleStr = "leader"
+	case Candidate:
+		roleStr = "candidate"
+	}
+	resp.NodeInfo = &raftpb.NodeInfo{
+		NodeId:      n.id,
+		Role:        roleStr,
+		Term:        n.currentTerm,
+		CommitIndex: n.commitIndex,
+		LogLength:   int32(len(n.log)),
+		LeaderId:    n.leaderID,
 	}
 
 	return resp
@@ -335,15 +371,22 @@ func (n *Node) tryAdvanceCommitIndex() {
 func (n *Node) shouldCommitEventLocked(event models.TaskEvent) bool {
 	switch event.Type {
 	case models.EventAssigned:
-		return event.Task != nil && event.TaskID != ""
+		if event.Task == nil || event.TaskID == "" {
+			return false
+		}
+		task, ok := n.state.Tasks[event.TaskID]
+		if !ok {
+			return true
+		}
+		return n.canRecoverClaimedTaskLocked(task)
 	case models.EventClaimed:
-		task, ok := n.latestTaskRecordLocked(event.TaskID)
+		task, ok := n.state.Tasks[event.TaskID]
 		return ok && task.Status == models.EventAssigned
 	case models.EventDone, models.EventFailed:
-		task, ok := n.latestTaskRecordLocked(event.TaskID)
+		task, ok := n.state.Tasks[event.TaskID]
 		return ok && task.Status == models.EventClaimed && task.AssignedTo == event.WorkerID
 	case models.EventCanceled:
-		task, ok := n.latestTaskRecordLocked(event.TaskID)
+		task, ok := n.state.Tasks[event.TaskID]
 		return ok && task.Status != models.EventDone && task.Status != models.EventFailed
 	case models.EventWorkerUp, models.EventWorkerAdded, models.EventWorkerDown, models.EventWorkerRemoved:
 		return true
@@ -352,32 +395,17 @@ func (n *Node) shouldCommitEventLocked(event models.TaskEvent) bool {
 	}
 }
 
-func (n *Node) latestTaskRecordLocked(taskID string) (*TaskRecord, bool) {
-	for i := len(n.log) - 1; i >= 0; i-- {
-		event, err := models.DecodeTaskEvent(n.log[i].Command)
-		if err != nil || event.TaskID != taskID {
-			continue
-		}
-
-		record := &TaskRecord{
-			ID:         taskID,
-			AssignedTo: event.WorkerID,
-			Status:     event.Type,
-		}
-		if event.Task != nil {
-			record.Data = event.Task.Data
-		}
-		switch event.Type {
-		case models.EventDone:
-			record.Result = event.Result
-		case models.EventFailed, models.EventCanceled:
-			record.Reason = event.Reason
-		}
-		return record, true
+func (n *Node) canRecoverClaimedTaskLocked(task *TaskRecord) bool {
+	if task == nil || task.Status != models.EventClaimed || task.AssignedTo == 0 {
+		return false
 	}
-
-	task, ok := n.state.Tasks[taskID]
-	return task, ok
+	if n.state.ActiveWorkers[task.AssignedTo] {
+		return false
+	}
+	if task.UpdatedAtUnixNano == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, task.UpdatedAtUnixNano)) >= n.taskClaimTimeout
 }
 
 func (n *Node) commitTaskEventAsLeader(ctx context.Context, event models.TaskEvent) (bool, int32, error) {
@@ -442,10 +470,13 @@ func (n *Node) SubmitTask(ctx context.Context, req *raftpb.SubmitTaskRequest) (*
 		taskID := fmt.Sprintf("task-%d-%d", n.id, time.Now().UnixNano())
 		n.mu.Unlock()
 		event = models.TaskEvent{
-			Type:   models.EventAssigned,
-			TaskID: taskID,
-			Task:   &models.Task{ID: taskID, Data: req.Data},
+			Type:          models.EventAssigned,
+			TaskID:        taskID,
+			Task:          &models.Task{ID: taskID, Data: req.Data},
+			EventUnixNano: time.Now().UnixNano(),
 		}
+	} else if event.EventUnixNano == 0 {
+		event.EventUnixNano = time.Now().UnixNano()
 	}
 
 	accepted, leaderID, err := n.commitTaskEventAsLeader(ctx, event)
