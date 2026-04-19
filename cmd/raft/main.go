@@ -21,6 +21,7 @@ func main() {
 	id := flag.Int("id", 0, "this node's raft id")
 	addr := flag.String("addr", "", "listen address, e.g. 127.0.0.1:5001")
 	peersRaw := flag.String("peers", "", "comma-separated id=addr entries")
+	workersRaw := flag.String("workers", "", "comma-separated worker IDs managed by this raft cluster")
 	dataDir := flag.String("data-dir", ".raft-state", "directory for persisted raft state")
 	flag.Parse()
 
@@ -36,6 +37,11 @@ func main() {
 	node := raft.NewNode(int32(*id), *addr, peers, nil)
 	if err := node.SetStoragePath(filepath.Join(*dataDir, fmt.Sprintf("node-%d.json", *id))); err != nil {
 		log.Fatalf("load raft state: %v", err)
+	}
+	if workerIDs, err := parseIDs(*workersRaw); err != nil {
+		log.Fatalf("parse workers: %v", err)
+	} else if len(workerIDs) > 0 {
+		node.SetManagedWorkers(workerIDs)
 	}
 	s := rpc.NewServer()
 	raftpb.RegisterRaftServer(s.GRPC(), node)
@@ -80,4 +86,25 @@ func parsePeers(raw string) (map[int32]string, error) {
 	}
 
 	return peers, nil
+}
+
+func parseIDs(raw string) ([]int32, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	ids := make([]int32, 0, len(strings.Split(raw, ",")))
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid id %q: %w", part, err)
+		}
+		ids = append(ids, int32(id))
+	}
+	return ids, nil
 }

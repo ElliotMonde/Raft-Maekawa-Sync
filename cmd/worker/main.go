@@ -1,13 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,7 +17,6 @@ import (
 	"time"
 
 	maekawapb "raft-maekawa-sync/api/maekawa"
-	raftpb "raft-maekawa-sync/api/raft"
 	"raft-maekawa-sync/internal/maekawa"
 	"raft-maekawa-sync/internal/models"
 	"raft-maekawa-sync/internal/raft"
@@ -23,10 +24,12 @@ import (
 )
 
 func main() {
-	id := flag.Int("id", 0, "worker/raft node ID")
-	addr := flag.String("addr", "", "listen address, e.g. 127.0.0.1:5001")
-	peersRaw := flag.String("peers", "", "comma-separated id=addr entries")
-	dataDir := flag.String("data-dir", ".raft-state", "directory for persisted raft state")
+	id := flag.Int("id", 0, "worker node ID")
+	addr := flag.String("addr", "", "listen address, e.g. 127.0.0.1:6001")
+	peersRaw := flag.String("peers", "", "comma-separated worker id=addr entries")
+	raftRaw := flag.String("raft", "", "comma-separated raft id=addr entries")
+	flag.String("data-dir", ".raft-state", "retained for compatibility; unused by pure worker nodes")
+	dashboardAddr := flag.String("dashboard", "", "optional dashboard HTTP addr for Maekawa event reporting, e.g. dashboard:8080")
 	flag.Parse()
 
 	if *id <= 0 || *addr == "" {
@@ -36,6 +39,13 @@ func main() {
 	peers, err := parsePeers(*peersRaw)
 	if err != nil {
 		log.Fatalf("parse peers: %v", err)
+	}
+	raftPeers, err := parsePeers(*raftRaw)
+	if err != nil {
+		log.Fatalf("parse raft peers: %v", err)
+	}
+	if len(raftPeers) == 0 {
+		log.Fatal("--raft is required")
 	}
 
 	activeIDs := make([]int32, 0, len(peers)+1)
@@ -49,17 +59,32 @@ func main() {
 		quorum = []int32{int32(*id)}
 	}
 
-	node := raft.NewNode(int32(*id), *addr, peers, nil)
-	if err := node.SetStoragePath(filepath.Join(*dataDir, fmt.Sprintf("node-%d.json", *id))); err != nil {
-		log.Fatalf("load raft state: %v", err)
+	membership := raft.NewRemoteMembership(int32(*id), raftPeers)
+	defer membership.Close()
+
+	worker := maekawa.NewWorker(int32(*id), quorum, membership)
+	if *dashboardAddr != "" {
+		endpoint := "http://" + *dashboardAddr + "/api/maekawa-event"
+		worker.EventHook = func(evtType string, from, to int32, clock int64) {
+			type payload struct {
+				Type      string `json:"type"`
+				From      int32  `json:"from"`
+				To        int32  `json:"to"`
+				NodeID    int32  `json:"node_id"`
+				Timestamp int64  `json:"timestamp"`
+			}
+			b, _ := json.Marshal(payload{Type: evtType, From: from, To: to, NodeID: from, Timestamp: clock})
+			resp, err := http.Post(endpoint, "application/json", bytes.NewReader(b))
+			if err == nil {
+				resp.Body.Close()
+			}
+		}
 	}
-	worker := maekawa.NewWorker(int32(*id), quorum, node)
-	node.SetApplier(worker)
 	worker.SetTaskExecutor(func(ctx context.Context, task *models.Task) (string, error) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(2000 * time.Millisecond):
 		}
 		return fmt.Sprintf("done:%s", task.ID), nil
 	})
@@ -74,7 +99,6 @@ func main() {
 	}
 
 	s := rpc.NewServer()
-	raftpb.RegisterRaftServer(s.GRPC(), node)
 	maekawapb.RegisterMaekawaServer(s.GRPC(), worker)
 	if err := s.Start(*addr); err != nil {
 		log.Fatalf("start worker server: %v", err)
@@ -85,7 +109,7 @@ func main() {
 	defer stop()
 	defer s.Stop()
 
-	go node.Run(ctx)
+	go membership.RunSync(ctx, worker)
 	go worker.RunTaskLoop(ctx)
 	<-ctx.Done()
 }
