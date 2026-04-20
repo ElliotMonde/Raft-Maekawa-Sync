@@ -17,6 +17,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type EventHook func(evtType string, from, to int32, clock int64)
+
 type Worker struct {
 	maekawapb.UnimplementedMaekawaServer
 
@@ -24,6 +26,8 @@ type Worker struct {
 	quorum     []int32 // IDs of nodes in quorum set
 	membership ClusterMembership
 	clientMgr  *ClientManager
+
+	EventHook EventHook // optional observer; set before Run
 
 	Mu sync.Mutex // State for Voting (as a Voter), local mutex
 
@@ -34,7 +38,9 @@ type Worker struct {
 
 	taskQueue     chan *models.Task
 	canceledTasks map[string]bool
+	queuedTasks   map[string]bool
 	executor      TaskExecutor
+	beforeClaim   func(task *models.Task) bool
 
 	votesReceived    int
 	grantsReceived   map[int32]bool // which quorum members have granted us this round
@@ -67,6 +73,7 @@ func NewWorker(id int32, quorum []int32, membership ClusterMembership) *Worker {
 		grantChan:        make(chan bool, 1),
 		taskQueue:        make(chan *models.Task, 64),
 		canceledTasks:    make(map[string]bool),
+		queuedTasks:      make(map[string]bool),
 		clientMgr:        NewClientManager(),
 		grantsReceived:   make(map[int32]bool),
 		yieldedTo:        make(map[int32]int64),
@@ -78,6 +85,28 @@ func (w *Worker) SetTaskExecutor(executor TaskExecutor) {
 	w.Mu.Lock()
 	defer w.Mu.Unlock()
 	w.executor = executor
+}
+
+func (w *Worker) SetBeforeClaimHook(hook func(task *models.Task) bool) {
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+	w.beforeClaim = hook
+}
+
+func (w *Worker) emit(evtType string, to int32) {
+	if w.EventHook != nil {
+		w.EventHook(evtType, w.ID, to, w.clock)
+	}
+}
+
+func (w *Worker) CurrentQuorum() []int32 {
+	w.Mu.Lock()
+	defer w.Mu.Unlock()
+	return append([]int32(nil), w.quorum...)
+}
+
+func (w *Worker) InitClients(peers map[int32]string, selfID int32) error {
+	return w.clientMgr.InitClients(peers, selfID)
 }
 
 func (w *Worker) RequestForGlobalLock(ctx context.Context) error {
@@ -107,6 +136,7 @@ func (w *Worker) RequestForGlobalLock(ctx context.Context) error {
 	w.Mu.Unlock()
 
 	for _, peerID := range quorum {
+		w.emit("lock_request", peerID)
 		go w.sendLockRequest(peerID, currTimestamp)
 	}
 
@@ -122,6 +152,7 @@ func (w *Worker) RequestForGlobalLock(ctx context.Context) error {
 			w.Mu.Lock()
 			w.inCS = true
 			w.Mu.Unlock()
+			w.emit("cs_enter", -1)
 			return nil
 		case <-ctx.Done():
 			w.Mu.Lock()
@@ -215,6 +246,7 @@ func (w *Worker) RequestLock(ctx context.Context, req *maekawapb.LockRequest) (*
 }
 
 func (w *Worker) sendGrant(targetID int32, timestamp int64) {
+	w.emit("lock_grant", targetID)
 	if targetID == w.ID {
 		w.Grant(context.Background(), &maekawapb.GrantRequest{SenderId: w.ID, Timestamp: timestamp})
 		return
@@ -286,6 +318,7 @@ func (w *Worker) Grant(ctx context.Context, req *maekawapb.GrantRequest) (*maeka
 
 func (w *Worker) exitGlobalCS() {
 	w.tick()
+	w.emit("cs_exit", -1)
 	w.Mu.Lock()
 	reqTimestamp := w.ownReqTimestamp
 	quorum := append([]int32(nil), w.quorum...)
@@ -297,6 +330,7 @@ func (w *Worker) exitGlobalCS() {
 	w.Mu.Unlock()
 
 	for _, peerID := range quorum {
+		w.emit("lock_release", peerID)
 		go w.sendRelease(peerID, reqTimestamp)
 	}
 }
