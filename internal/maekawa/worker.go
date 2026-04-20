@@ -38,6 +38,7 @@ type Worker struct {
 
 	taskQueue     chan *models.Task
 	canceledTasks map[string]bool
+	queuedTasks   map[string]bool
 	executor      TaskExecutor
 	beforeClaim   func(task *models.Task) bool
 
@@ -72,6 +73,7 @@ func NewWorker(id int32, quorum []int32, membership ClusterMembership) *Worker {
 		grantChan:        make(chan bool, 1),
 		taskQueue:        make(chan *models.Task, 64),
 		canceledTasks:    make(map[string]bool),
+		queuedTasks:      make(map[string]bool),
 		clientMgr:        NewClientManager(),
 		grantsReceived:   make(map[int32]bool),
 		yieldedTo:        make(map[int32]int64),

@@ -70,6 +70,7 @@ type Node struct {
 
 	storagePath         string
 	pendingLiveness     map[int32]bool
+	pendingClaims       map[string]int32
 	beforeReplicate     func(models.TaskEvent) bool
 	replayedToApplier   bool
 	peerConns           map[int32]*grpc.ClientConn
@@ -82,12 +83,6 @@ func NewNode(id int32, addr string, peers map[int32]string, applier TaskEventApp
 	peersCopy := make(map[int32]string, len(peers))
 	for peerID, peerAddr := range peers {
 		peersCopy[peerID] = peerAddr
-	}
-
-	activeWorkers := make(map[int32]bool, len(peers)+1)
-	activeWorkers[id] = true
-	for peerID := range peersCopy {
-		activeWorkers[peerID] = true
 	}
 
 	n := &Node{
@@ -106,11 +101,12 @@ func NewNode(id int32, addr string, peers map[int32]string, applier TaskEventApp
 		taskClaimTimeout:         4 * time.Second,
 		taskRecoveryCheckIntv:    500 * time.Millisecond,
 		state: &StateMachine{
-			ActiveWorkers: activeWorkers,
+			ActiveWorkers: make(map[int32]bool),
 			Tasks:         make(map[string]*TaskRecord),
 		},
 		applier:             applier,
 		pendingLiveness:     make(map[int32]bool),
+		pendingClaims:       make(map[string]int32),
 		peerConns:           make(map[int32]*grpc.ClientConn),
 		peerClients:         make(map[int32]raftpb.RaftClient),
 		workerHeartbeats:    make(map[int32]time.Time),
@@ -212,7 +208,11 @@ func (n *Node) SetManagedWorkers(workerIDs []int32) {
 
 	activeWorkers := make(map[int32]bool, len(workerIDs))
 	for _, workerID := range workerIDs {
-		activeWorkers[workerID] = n.state.ActiveWorkers[workerID]
+		alive, ok := n.state.ActiveWorkers[workerID]
+		if !ok {
+			alive = true
+		}
+		activeWorkers[workerID] = alive
 	}
 	n.state.ActiveWorkers = activeWorkers
 	_ = n.persistLocked()

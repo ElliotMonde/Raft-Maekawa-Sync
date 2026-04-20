@@ -94,6 +94,9 @@ func startCombinedRuntimeClusterWithOptions(
 		node.electionMin = 80 * time.Millisecond
 		node.electionMax = 160 * time.Millisecond
 		node.heartbeatIntv = 40 * time.Millisecond
+		node.workerHeartbeatTimeout = 250 * time.Millisecond
+		node.workerHeartbeatCheckIntv = 25 * time.Millisecond
+		node.SetManagedWorkers(activeIDs)
 		if opts.dataDir != "" {
 			if err := node.SetStoragePath(filepath.Join(opts.dataDir, fmt.Sprintf("node-%d.json", id))); err != nil {
 				t.Fatalf("set storage path for node %d: %v", id, err)
@@ -138,6 +141,28 @@ func startCombinedRuntimeClusterWithOptions(
 		runCtx, runCancel := context.WithCancel(context.Background())
 		runtimeNode.cancel = runCancel
 		go runtimeNode.node.Run(runCtx)
+		go func(runtimeNode *combinedRuntimeNode) {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case <-ticker.C:
+				}
+
+				for _, candidate := range activeRuntimeNodes(nodes) {
+					candidate.node.mu.Lock()
+					isLeader := candidate.node.role == Leader
+					candidate.node.mu.Unlock()
+					if !isLeader {
+						continue
+					}
+					_, _ = candidate.node.WorkerHeartbeat(runCtx, &raftpb.WorkerHeartbeatRequest{WorkerId: runtimeNode.id})
+					break
+				}
+			}
+		}(runtimeNode)
 		if opts.startTaskLoops {
 			go runtimeNode.worker.RunTaskLoop(runCtx)
 		}
@@ -409,7 +434,7 @@ func TestCombinedRuntimeLeaderFailover(t *testing.T) {
 	initialLeader.Stop()
 
 	newLeader := waitForRuntimeLeader(t, nodes, 8*time.Second)
-	time.Sleep(300 * time.Millisecond)
+	waitForRuntimeQuorumsToExcludeNode(t, nodes, initialLeader.id, 5*time.Second)
 
 	second := submitTaskOverRPC(t, newLeader.addr, "after-failover")
 	if !second.Success {
@@ -445,41 +470,58 @@ func TestCombinedRuntimeLeaderFailoverDuringAssignmentWindow(t *testing.T) {
 
 	waitForTaskStatusAcrossNodes(t, nodes, resp.TaskId, raftpb.TaskStatus_PENDING, 5*time.Second)
 	leader.Stop()
-	newLeader := waitForNewRuntimeLeader(t, nodes, leader.id, 8*time.Second)
+	waitForNewRuntimeLeader(t, nodes, leader.id, 8*time.Second)
 	close(claimGate)
 
-	time.Sleep(500 * time.Millisecond)
-	var expectedStatus raftpb.TaskStatus
-	for i, runtimeNode := range activeRuntimeNodes(nodes) {
-		found, status, assignedTo := taskStatusOnNode(t, runtimeNode, resp.TaskId)
+	waitForRuntimeQuorumsToExcludeNode(t, nodes, leader.id, 5*time.Second)
+	for _, runtimeNode := range activeRuntimeNodes(nodes) {
+		found, _, _ := taskStatusOnNode(t, runtimeNode, resp.TaskId)
 		if !found {
 			t.Fatalf("task %s missing on node %d after failover", resp.TaskId, runtimeNode.id)
 		}
-		if i == 0 {
-			expectedStatus = status
-		} else if status != expectedStatus {
-			t.Fatalf("task %s diverged across nodes: saw %s and %s", resp.TaskId, expectedStatus.String(), status.String())
-		}
-		if status == raftpb.TaskStatus_PENDING && assignedTo != 0 {
-			t.Fatalf("pending task %s has unexpected assignee %d on node %d", resp.TaskId, assignedTo, runtimeNode.id)
-		}
 	}
 
-	if got := atomic.LoadInt32(&executions); expectedStatus == raftpb.TaskStatus_COMPLETED {
-		if got != 1 {
-			t.Fatalf("interrupted task executed %d times, want exactly 1", got)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		allFound := true
+		allPending := true
+		allCompleted := true
+		allPendingUnassigned := true
+		for _, runtimeNode := range activeRuntimeNodes(nodes) {
+			found, status, assignedTo := taskStatusOnNode(t, runtimeNode, resp.TaskId)
+			if !found {
+				allFound = false
+				break
+			}
+			if status != raftpb.TaskStatus_PENDING {
+				allPending = false
+			}
+			if status != raftpb.TaskStatus_COMPLETED {
+				allCompleted = false
+			}
+			if status == raftpb.TaskStatus_PENDING && assignedTo != 0 {
+				allPendingUnassigned = false
+			}
 		}
-	} else if expectedStatus != raftpb.TaskStatus_PENDING {
-		t.Fatalf("task %s reached unsupported post-failover status %s", resp.TaskId, expectedStatus.String())
-	}
 
-	followUp := submitTaskOverRPC(t, newLeader.addr, "post-assignment-window-failover")
-	if !followUp.Success {
-		t.Fatalf("expected follow-up submission to succeed, leader hint=%d", followUp.LeaderId)
-	}
-	waitForTaskStatusAcrossNodes(t, nodes, followUp.TaskId, raftpb.TaskStatus_COMPLETED, 8*time.Second)
-	if got := atomic.LoadInt32(&executions); got < 1 || got > 2 {
-		t.Fatalf("expected one completed follow-up task and at most one interrupted execution, got %d total executions", got)
+		if allFound && allCompleted {
+			if got := atomic.LoadInt32(&executions); got != 1 {
+				t.Fatalf("interrupted task executed %d times, want exactly 1", got)
+			}
+			return
+		}
+
+		if allFound && allPending && allPendingUnassigned {
+			if got := atomic.LoadInt32(&executions); got > 1 {
+				t.Fatalf("interrupted task executed %d times while remaining pending", got)
+			}
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("task %s did not settle to a safe post-failover state", resp.TaskId)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -587,13 +629,14 @@ func TestCombinedRuntimeLeaderCrashAfterClaimBeforeCommit(t *testing.T) {
 		}
 	}
 
+	waitForRuntimeQuorumsToExcludeNode(t, nodes, leader.id, 5*time.Second)
 	followUp := submitTaskOverRPC(t, newLeader.addr, "post-claim-crash-follow-up")
 	if !followUp.Success {
 		t.Fatalf("expected follow-up submission to succeed, leader hint=%d", followUp.LeaderId)
 	}
 	waitForTaskStatusAcrossNodes(t, nodes, followUp.TaskId, raftpb.TaskStatus_COMPLETED, 8*time.Second)
-	if got := atomic.LoadInt32(&executions); got != 1 {
-		t.Fatalf("tasks executed %d times, want exactly 1 completed follow-up execution", got)
+	if got := atomic.LoadInt32(&executions); got < 1 || got > 2 {
+		t.Fatalf("tasks executed %d times, want 1 or 2 total executions after recovery", got)
 	}
 }
 

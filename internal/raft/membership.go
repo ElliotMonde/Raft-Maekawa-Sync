@@ -138,11 +138,10 @@ func (n *Node) commitOrForwardEvent(ctx context.Context, event models.TaskEvent)
 }
 
 func (n *Node) notePeerReachability(peerID int32, alive bool) {
-	if peerID == n.id {
-		return
-	}
-
-	n.noteWorkerReachability(peerID, alive)
+	// Raft peer transport reachability is not the source of truth for worker
+	// liveness. Workers are tracked explicitly via WorkerHeartbeat.
+	_ = peerID
+	_ = alive
 }
 
 func (n *Node) noteWorkerReachability(workerID int32, alive bool) {

@@ -28,13 +28,8 @@ func (n *Node) SetStoragePath(path string) error {
 }
 
 func (n *Node) initStateMachineLocked() {
-	activeWorkers := make(map[int32]bool, len(n.peers)+1)
-	activeWorkers[n.id] = true
-	for peerID := range n.peers {
-		activeWorkers[peerID] = true
-	}
 	n.state = &StateMachine{
-		ActiveWorkers: activeWorkers,
+		ActiveWorkers: make(map[int32]bool),
 		Tasks:         make(map[string]*TaskRecord),
 	}
 }

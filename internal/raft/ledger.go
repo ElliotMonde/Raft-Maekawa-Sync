@@ -79,6 +79,7 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 
 	switch event.Type {
 	case models.EventAssigned:
+		delete(n.pendingClaims, event.TaskID)
 		record := &TaskRecord{
 			ID:     event.TaskID,
 			Status: models.EventAssigned,
@@ -91,6 +92,7 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 		delete(n.pendingTaskRecovery, event.TaskID)
 
 	case models.EventClaimed:
+		delete(n.pendingClaims, event.TaskID)
 		record, ok := n.state.Tasks[event.TaskID]
 		if !ok {
 			record = &TaskRecord{ID: event.TaskID}
@@ -103,6 +105,7 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 		record.UpdatedAtUnixNano = updatedAt
 
 	case models.EventDone:
+		delete(n.pendingClaims, event.TaskID)
 		record, ok := n.state.Tasks[event.TaskID]
 		if !ok {
 			record = &TaskRecord{ID: event.TaskID}
@@ -114,6 +117,7 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 		delete(n.pendingTaskRecovery, event.TaskID)
 
 	case models.EventFailed:
+		delete(n.pendingClaims, event.TaskID)
 		record, ok := n.state.Tasks[event.TaskID]
 		if !ok {
 			record = &TaskRecord{ID: event.TaskID}
@@ -125,6 +129,7 @@ func (n *Node) applyEvent(event models.TaskEvent) {
 		delete(n.pendingTaskRecovery, event.TaskID)
 
 	case models.EventCanceled:
+		delete(n.pendingClaims, event.TaskID)
 		record, ok := n.state.Tasks[event.TaskID]
 		if !ok {
 			record = &TaskRecord{ID: event.TaskID}
@@ -381,7 +386,13 @@ func (n *Node) shouldCommitEventLocked(event models.TaskEvent) bool {
 		return n.canRecoverClaimedTaskLocked(task)
 	case models.EventClaimed:
 		task, ok := n.state.Tasks[event.TaskID]
-		return ok && task.Status == models.EventAssigned
+		if !ok || task.Status != models.EventAssigned {
+			return false
+		}
+		if reservedBy, ok := n.pendingClaims[event.TaskID]; ok && reservedBy != event.WorkerID {
+			return false
+		}
+		return true
 	case models.EventDone, models.EventFailed:
 		task, ok := n.state.Tasks[event.TaskID]
 		return ok && task.Status == models.EventClaimed && task.AssignedTo == event.WorkerID
@@ -425,6 +436,9 @@ func (n *Node) commitTaskEventAsLeader(ctx context.Context, event models.TaskEve
 		n.mu.Unlock()
 		return false, leaderID, nil
 	}
+	if event.Type == models.EventClaimed {
+		n.pendingClaims[event.TaskID] = event.WorkerID
+	}
 
 	n.appendEntry(cmd)
 	newIndex := int32(len(n.log))
@@ -442,6 +456,13 @@ func (n *Node) commitTaskEventAsLeader(ctx context.Context, event models.TaskEve
 	n.mu.Unlock()
 
 	if beforeReplicate != nil && !beforeReplicate(event) {
+		if event.Type == models.EventClaimed {
+			n.mu.Lock()
+			if n.pendingClaims[event.TaskID] == event.WorkerID {
+				delete(n.pendingClaims, event.TaskID)
+			}
+			n.mu.Unlock()
+		}
 		return false, leaderID, nil
 	}
 
@@ -451,6 +472,9 @@ func (n *Node) commitTaskEventAsLeader(ctx context.Context, event models.TaskEve
 
 	if !n.waitForCommit(ctx, newIndex, 5*time.Second) {
 		n.mu.Lock()
+		if event.Type == models.EventClaimed && n.pendingClaims[event.TaskID] == event.WorkerID {
+			delete(n.pendingClaims, event.TaskID)
+		}
 		leaderHint := n.leaderID
 		n.mu.Unlock()
 		return false, leaderHint, nil

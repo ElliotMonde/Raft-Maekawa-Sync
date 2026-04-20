@@ -19,8 +19,8 @@ func TestNodeDefaults(t *testing.T) {
 	if n.currentTerm != 0 {
 		t.Fatal("term should start at 0")
 	}
-	if !n.state.ActiveWorkers[1] {
-		t.Fatal("self should be marked active")
+	if len(n.state.ActiveWorkers) != 0 {
+		t.Fatal("workers should not be tracked until configured")
 	}
 }
 
