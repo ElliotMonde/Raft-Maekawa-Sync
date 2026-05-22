@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"raft-maekawa-sync/internal/models"
+	"strings"
 	"time"
 )
 
@@ -91,9 +92,36 @@ func (w *Worker) handleTaskExecution(ctx context.Context, task *models.Task) {
 	}()
 
 	if execErr != nil {
-		_ = w.membership.ReportTaskFailure(task.ID, w.ID, execErr.Error())
+		w.reportTaskResult(ctx, func() error {
+			return w.membership.ReportTaskFailure(task.ID, w.ID, execErr.Error())
+		})
 	} else {
-		_ = w.membership.ReportTaskSuccess(task.ID, w.ID, result)
+		w.reportTaskResult(ctx, func() error {
+			return w.membership.ReportTaskSuccess(task.ID, w.ID, result)
+		})
+	}
+}
+
+func (w *Worker) reportTaskResult(ctx context.Context, report func() error) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		err := report()
+		if err == nil {
+			return
+		}
+		// A rejection means the task state has already moved on; retries will
+		// not make progress and can loop forever.
+		if strings.Contains(err.Error(), "not accepted") {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 

@@ -19,6 +19,11 @@ type taskMembership struct {
 	fakeMembership
 	done   chan string // receives task IDs on success
 	failed chan string // receives task IDs on failure
+
+	successFailures int
+	failureFailures int
+	successCalls    int
+	failureCalls    int
 }
 
 func newTaskMembership(ids []int32) *taskMembership {
@@ -30,6 +35,13 @@ func newTaskMembership(ids []int32) *taskMembership {
 }
 
 func (m *taskMembership) ReportTaskSuccess(taskID string, workerID int32, result string) error {
+	m.mu.Lock()
+	m.successCalls++
+	if m.successCalls <= m.successFailures {
+		m.mu.Unlock()
+		return fmt.Errorf("leader unavailable")
+	}
+	m.mu.Unlock()
 	select {
 	case m.done <- taskID:
 	default:
@@ -38,6 +50,13 @@ func (m *taskMembership) ReportTaskSuccess(taskID string, workerID int32, result
 }
 
 func (m *taskMembership) ReportTaskFailure(taskID string, workerID int32, reason string) error {
+	m.mu.Lock()
+	m.failureCalls++
+	if m.failureCalls <= m.failureFailures {
+		m.mu.Unlock()
+		return fmt.Errorf("leader unavailable")
+	}
+	m.mu.Unlock()
 	select {
 	case m.failed <- taskID:
 	default:
@@ -206,6 +225,31 @@ func TestMultipleTasksExecutedSequentially(t *testing.T) {
 
 	if len(order) != 2 || order[0] != "seq-1" || order[1] != "seq-2" {
 		t.Errorf("execution order = %v, want [seq-1, seq-2]", order)
+	}
+}
+
+func TestTaskResultReportingRetriesTransientErrors(t *testing.T) {
+	mem := newTaskMembership([]int32{0})
+	mem.successFailures = 2
+	w := NewWorker(0, QuorumFor(0, 1), mem)
+
+	w.SetTaskExecutor(func(_ context.Context, task *models.Task) (string, error) {
+		return "ok:" + task.ID, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { w.RunTaskLoop(ctx) }()
+
+	task := &models.Task{ID: "retry-success", Data: ""}
+	w.taskQueue <- task
+
+	mem.waitForDone(t, task.ID, 3*time.Second)
+
+	mem.mu.Lock()
+	defer mem.mu.Unlock()
+	if mem.successCalls != 3 {
+		t.Fatalf("ReportTaskSuccess calls = %d, want 3", mem.successCalls)
 	}
 }
 

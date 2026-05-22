@@ -147,6 +147,17 @@ func (w *Worker) RequestForGlobalLock(ctx context.Context) error {
 		select {
 		case success := <-w.grantChan:
 			if !success {
+				w.Mu.Lock()
+				reqTimestamp := w.ownReqTimestamp
+				oldQuorum := append([]int32(nil), quorum...)
+				w.votesReceived = 0
+				w.grantsReceived = make(map[int32]bool)
+				w.committed = false
+				w.ownReqTimestamp = -1
+				w.Mu.Unlock()
+				for _, peerID := range oldQuorum {
+					go w.sendRelease(peerID, reqTimestamp)
+				}
 				return fmt.Errorf("membership changed during lock acquisition")
 			}
 			w.Mu.Lock()

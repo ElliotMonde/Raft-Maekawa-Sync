@@ -53,8 +53,8 @@ button.scenario {
   line-height: 1.5;
 }
 button.scenario:hover { background: var(--bg4); border-color: var(--accent); }
-button.scenario .scenario-title { font-weight: 600; color: var(--text); display: block; }
-button.scenario .scenario-desc { color: var(--text-dim); font-size: 11px; display: block; margin-top: 2px; }
+button.scenario .scenario-title { font-weight: 600; color: var(--text); display: block; white-space: normal; word-break: break-word; }
+button.scenario .scenario-desc { color: var(--text-dim); font-size: 11px; display: block; margin-top: 2px; white-space: normal; word-break: break-word; }
 
 /* ── Inputs ── */
 input[type="text"] {
@@ -123,7 +123,7 @@ input[type="text"]:focus { border-color: var(--accent); }
 }
 
 .sidebar {
-  width: 260px;
+  width: 320px;
   flex-shrink: 0;
   background: var(--bg2);
   border-right: 1px solid var(--border);

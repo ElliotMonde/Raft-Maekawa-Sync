@@ -16,6 +16,11 @@ const MAEKAWA_TYPES = new Set<DashEventType>([
   'cs_enter', 'cs_exit',
 ])
 
+const HIDDEN_TYPES = new Set<DashEventType>([
+  'log_replicated',
+  'log_committed',
+])
+
 const COLOR: Partial<Record<DashEventType, string>> = {
   vote_request:   'var(--candidate)',
   vote_granted:   'var(--cs)',
@@ -38,7 +43,12 @@ const COLOR: Partial<Record<DashEventType, string>> = {
   node_up:        'var(--cs)',
 }
 
-function eventSummary(e: DashEvent): string {
+function taskLabel(taskID: string | undefined, tasks: Map<string, { display_label: string }>): string {
+  if (!taskID) return 'Task'
+  return tasks.get(taskID)?.display_label ?? taskID.slice(0, 10)
+}
+
+function eventSummary(e: DashEvent, tasks: Map<string, { display_label: string }>): string {
   switch (e.type) {
     case 'node_role':      return `N${e.node_id} became ${e.role?.toUpperCase()} (term ${e.term})`
     case 'vote_request':   return `N${e.from} → N${e.to}: RequestVote (term ${e.term})`
@@ -46,10 +56,10 @@ function eventSummary(e: DashEvent): string {
     case 'heartbeat':      return `N${e.from} → N${e.to}: Heartbeat`
     case 'log_replicated': return `N${e.node_id}: log[${e.log_index}] replicated`
     case 'log_committed':  return `N${e.node_id}: log[${e.log_index}] committed`
-    case 'task_submitted': return `Task ${e.task_id?.slice(0, 10)} submitted`
-    case 'task_assigned':  return `Task ${e.task_id?.slice(0, 10)} → ${workerLabel(e.node_id ?? -1)}`
-    case 'task_done':      return `Task ${e.task_id?.slice(0, 10)} DONE`
-    case 'task_failed':    return `Task ${e.task_id?.slice(0, 10)} FAILED`
+    case 'task_submitted': return `${taskLabel(e.task_id, tasks)} submitted`
+    case 'task_assigned':  return `${taskLabel(e.task_id, tasks)} → ${workerLabel(e.node_id ?? -1)}`
+    case 'task_done':      return `${taskLabel(e.task_id, tasks)} DONE`
+    case 'task_failed':    return `${taskLabel(e.task_id, tasks)} FAILED`
     case 'lock_request':   return `${workerLabel(e.from ?? -1)} → ${workerLabel(e.to ?? -1)}: REQUEST (t=${e.timestamp})`
     case 'lock_grant':     return `${workerLabel(e.from ?? -1)} → ${workerLabel(e.to ?? -1)}: GRANT`
     case 'lock_defer':     return `${workerLabel(e.from ?? -1)} → ${workerLabel(e.to ?? -1)}: DEFER`
@@ -66,6 +76,7 @@ function eventSummary(e: DashEvent): string {
 }
 
 function matchesFilter(e: DashEvent, filter: Filter): boolean {
+  if (HIDDEN_TYPES.has(e.type)) return false
   if (filter === 'all') return true
   if (filter === 'raft')    return RAFT_TYPES.has(e.type)
   if (filter === 'tasks')   return TASK_TYPES.has(e.type)
@@ -91,6 +102,7 @@ function getTime(e: DashEvent): string {
 
 export function EventLog() {
   const events = useStore(s => s.events)
+  const tasks = useStore(s => s.tasks)
   const [filter, setFilter] = useState<Filter>('all')
   const [pinned, setPinned] = useState(true)  // auto-scroll to bottom
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -137,7 +149,7 @@ export function EventLog() {
             <span className="log-type" style={{ color: COLOR[e.type] ?? 'var(--text-dim)' }}>
               [{e.type}]
             </span>
-            <span className="log-msg">{eventSummary(e)}</span>
+            <span className="log-msg">{eventSummary(e, tasks)}</span>
           </div>
         ))}
         {visible.length === 0 && (

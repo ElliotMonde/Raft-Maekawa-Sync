@@ -169,7 +169,8 @@ function TaskRibbon({ tasks, x, y, width }: { tasks: TaskState[]; x: number; y: 
               fill={t.status === 'completed' ? '#0f2d1a' : t.status === 'failed' ? '#1a0a0a' : t.status === 'in_progress' ? '#0d1f3c' : 'var(--bg3)'}
               stroke={color} strokeWidth={0.75}
             />
-            <text x={6} y={10} fontSize={8} fill="var(--text-dim)">{t.id.slice(0, 10)}</text>
+            <title>{t.id}</title>
+            <text x={6} y={10} fontSize={8} fill="var(--text-dim)">{t.display_label}</text>
             <text x={6} y={20} fontSize={9} fontWeight={700} fill={color}>
               {t.status.replace('_', ' ').toUpperCase()}{t.assigned_to > 0 ? ` →${workerLabel(t.assigned_to)}` : ''}
             </text>

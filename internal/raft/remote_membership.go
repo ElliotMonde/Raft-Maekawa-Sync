@@ -438,11 +438,16 @@ func (m *RemoteMembership) applySnapshot(resp *raftpb.GetStateResponse, applier 
 			continue
 		}
 
+		// A dead worker's in-progress task must be re-queued regardless of whether
+		// the task record itself changed — the membership change is what triggered recovery.
+		assignedWorkerDied := curr.status == raftpb.TaskStatus_IN_PROGRESS &&
+			curr.assignedTo > 0 && !newActive[curr.assignedTo]
+
 		changed := !hadPrev ||
 			prev.status != curr.status ||
 			prev.assignedTo != curr.assignedTo ||
 			prev.data != curr.data
-		if !changed {
+		if !changed && !assignedWorkerDied {
 			continue
 		}
 
@@ -452,7 +457,18 @@ func (m *RemoteMembership) applySnapshot(resp *raftpb.GetStateResponse, applier 
 			event.Type = models.EventAssigned
 			event.Task = &models.Task{ID: taskID, Data: curr.data}
 		case raftpb.TaskStatus_IN_PROGRESS:
-			event.Type = models.EventClaimed
+			if assignedWorkerDied {
+				// The Raft leader will reset the task to PENDING after taskClaimTimeout.
+				// Don't fire EventAssigned yet — the claim would be rejected and the task
+				// dropped. Workers will re-enqueue when they see the task go to PENDING.
+				continue
+			} else if !hadPrev && curr.assignedTo == m.selfID {
+				// Fresh start after crash — re-enqueue own in-progress task.
+				event.Type = models.EventAssigned
+				event.Task = &models.Task{ID: taskID, Data: curr.data}
+			} else {
+				event.Type = models.EventClaimed
+			}
 		case raftpb.TaskStatus_COMPLETED:
 			event.Type = models.EventDone
 		default:

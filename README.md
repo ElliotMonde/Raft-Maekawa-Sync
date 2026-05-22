@@ -79,3 +79,20 @@ make docker-down
 ```
 
 Each Raft node stores its state in its own Docker volume so restarts preserve state.
+
+## Documentation
+
+All detailed write-ups and diagrams live in the [`docs/`](./docs/) folder:
+
+- [Technical Write-Up](./docs/technical_report.md)
+  - High-level overview of the full system, including project goals, architecture, Raft, Maekawa, and the end-to-end design choices.
+- [Implementation: Raft Consensus](./docs/impl-raft.md)
+  - Design and implementation details for leader election, log replication, commit/apply flow, persistence, worker liveness, and task recovery.
+- [Implementation: Maekawa's Mutual Exclusion](./docs/impl-maekawa.md)
+  - Design and implementation details for quorum construction, Lamport clocks, lock acquisition/release, deadlock prevention, and membership-aware regridding.
+- [Implementation: Raft + Maekawa Integration](./docs/impl-integration.md)
+  - Explains the boundary between the two layers, task lifecycle flow, and the failure/recovery scenarios that require both to cooperate.
+- [Maekawa + Raft Sequence Diagrams](./docs/maekawa-raft-sequence.md)
+  - Mermaid sequence diagrams for the normal runtime flow, failover windows, regridding, task recovery, and claim-race behavior.
+- [Test Cases and Results](./docs/TEST_CASES.md)
+  - Summary of the automated test suite, including what each major test validates across Raft, Maekawa, integration, and runtime recovery cases.

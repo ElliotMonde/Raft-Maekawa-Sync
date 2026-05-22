@@ -150,6 +150,7 @@ func (c *Collector) StartNode(id int32, addr, dashAddr string) error {
 	n := NodeConfig{ID: id, Addr: addr}
 	c.mu.Lock()
 	c.nodes[id] = n
+	delete(c.prev, id) // clear stale "down" so next snapshot reflects live state
 	c.mu.Unlock()
 	c.dialOne(n)
 	c.hub.Broadcast(DashEvent{Type: "node_up", NodeID: id})

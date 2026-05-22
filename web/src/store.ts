@@ -40,6 +40,7 @@ export interface NodeState {
 
 export interface TaskState {
   id: string
+  display_label: string
   data: string
   status: TaskStatus
   assigned_to: number
@@ -120,7 +121,7 @@ function makeDefaultNode(id: number): NodeState {
 
 function defaultNodes(): Map<number, NodeState> {
   const m = new Map<number, NodeState>()
-  for (const id of [1, 2, 3, 4, 5, 6]) m.set(id, makeDefaultNode(id))
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8]) m.set(id, makeDefaultNode(id))
   return m
 }
 
@@ -134,6 +135,25 @@ function recomputeWorkerQuorums(nodes: Map<number, NodeState>): void {
       nodes.set(id, { ...node, quorum: computeQuorum(id, workerIds) })
     }
   }
+}
+
+function nextTaskLabel(tasks: Map<string, TaskState>): string {
+  return `T${tasks.size + 1}`
+}
+
+function upsertTask(
+  tasks: Map<string, TaskState>,
+  taskID: string,
+  update: (prev: TaskState) => TaskState,
+): void {
+  const prev = tasks.get(taskID) ?? {
+    id: taskID,
+    display_label: nextTaskLabel(tasks),
+    data: taskID.slice(0, 12),
+    status: 'pending' as TaskStatus,
+    assigned_to: -1,
+  }
+  tasks.set(taskID, update(prev))
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -169,7 +189,15 @@ export const useStore = create<AppStore>((set, get) => ({
             }
             membershipChanged = true
           }
-          if (snap?.tasks) for (const t of snap.tasks) tasks.set(t.id, t)
+          if (snap?.tasks) {
+            for (const t of snap.tasks) {
+              const prev = tasks.get(t.id)
+              tasks.set(t.id, {
+                ...t,
+                display_label: prev?.display_label ?? nextTaskLabel(tasks),
+              })
+            }
+          }
           break
         }
 
@@ -220,22 +248,33 @@ export const useStore = create<AppStore>((set, get) => ({
         }
 
         case 'task_submitted': {
-          if (e.task_id) tasks.set(e.task_id, { id: e.task_id, data: e.task_id.slice(0, 12), status: 'pending', assigned_to: -1 })
+          if (e.task_id) {
+            upsertTask(tasks, e.task_id, (prev) => ({
+              ...prev,
+              status: 'pending',
+              assigned_to: -1,
+            }))
+          }
           break
         }
 
         case 'task_assigned': {
           if (e.task_id) {
-            const prev = tasks.get(e.task_id) ?? { id: e.task_id, data: '', status: 'pending' as TaskStatus, assigned_to: -1 }
-            tasks.set(e.task_id, { ...prev, status: 'in_progress', assigned_to: e.node_id ?? -1 })
+            upsertTask(tasks, e.task_id, (prev) => ({
+              ...prev,
+              status: 'in_progress',
+              assigned_to: e.node_id ?? -1,
+            }))
           }
           break
         }
 
         case 'task_done': {
           if (e.task_id) {
-            const prev = tasks.get(e.task_id)
-            if (prev) tasks.set(e.task_id, { ...prev, status: 'completed' })
+            upsertTask(tasks, e.task_id, (prev) => ({
+              ...prev,
+              status: 'completed',
+            }))
           }
           // Safety net: clear in_cs for the worker that finished — cs_exit may have been missed
           if (e.node_id != null && e.node_id >= 4) {
@@ -247,8 +286,10 @@ export const useStore = create<AppStore>((set, get) => ({
 
         case 'task_failed': {
           if (e.task_id) {
-            const prev = tasks.get(e.task_id)
-            if (prev) tasks.set(e.task_id, { ...prev, status: 'failed' })
+            upsertTask(tasks, e.task_id, (prev) => ({
+              ...prev,
+              status: 'failed',
+            }))
           }
           break
         }

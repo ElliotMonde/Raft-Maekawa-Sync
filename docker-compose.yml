@@ -11,7 +11,7 @@ services:
       - --id=1
       - --addr=raft-node1:5001
       - --peers=2=raft-node2:5002,3=raft-node3:5003
-      - --workers=4,5,6
+      - --workers=4,5,6,7,8
       - --data-dir=/data
     ports:
       - "5001:5001"
@@ -35,7 +35,7 @@ services:
       - --id=2
       - --addr=raft-node2:5002
       - --peers=1=raft-node1:5001,3=raft-node3:5003
-      - --workers=4,5,6
+      - --workers=4,5,6,7,8
       - --data-dir=/data
     ports:
       - "5002:5002"
@@ -59,7 +59,7 @@ services:
       - --id=3
       - --addr=raft-node3:5003
       - --peers=1=raft-node1:5001,2=raft-node2:5002
-      - --workers=4,5,6
+      - --workers=4,5,6,7,8
       - --data-dir=/data
     ports:
       - "5003:5003"
@@ -83,7 +83,7 @@ services:
     command:
       - --id=4
       - --addr=worker1:6001
-      - --peers=5=worker2:6002,6=worker3:6003
+      - --peers=5=worker2:6002,6=worker3:6003,7=worker4:6004,8=worker5:6005
       - --raft=1=raft-node1:5001,2=raft-node2:5002,3=raft-node3:5003
       - --data-dir=/data
       - --dashboard=dashboard:8080
@@ -108,7 +108,7 @@ services:
     command:
       - --id=5
       - --addr=worker2:6002
-      - --peers=4=worker1:6001,6=worker3:6003
+      - --peers=4=worker1:6001,6=worker3:6003,7=worker4:6004,8=worker5:6005
       - --raft=1=raft-node1:5001,2=raft-node2:5002,3=raft-node3:5003
       - --data-dir=/data
       - --dashboard=dashboard:8080
@@ -133,7 +133,7 @@ services:
     command:
       - --id=6
       - --addr=worker3:6003
-      - --peers=4=worker1:6001,5=worker2:6002
+      - --peers=4=worker1:6001,5=worker2:6002,7=worker4:6004,8=worker5:6005
       - --raft=1=raft-node1:5001,2=raft-node2:5002,3=raft-node3:5003
       - --data-dir=/data
       - --dashboard=dashboard:8080
@@ -148,6 +148,56 @@ services:
       retries: 10
       start_period: 5s
 
+  worker4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    container_name: raft-maekawa-worker4
+    entrypoint: ["/app/bin/worker"]
+    command:
+      - --id=7
+      - --addr=worker4:6004
+      - --peers=4=worker1:6001,5=worker2:6002,6=worker3:6003,8=worker5:6005
+      - --raft=1=raft-node1:5001,2=raft-node2:5002,3=raft-node3:5003
+      - --data-dir=/data
+      - --dashboard=dashboard:8080
+    ports:
+      - "6004:6004"
+    volumes:
+      - worker4-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z worker4 6004"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  worker5:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    container_name: raft-maekawa-worker5
+    entrypoint: ["/app/bin/worker"]
+    command:
+      - --id=8
+      - --addr=worker5:6005
+      - --peers=4=worker1:6001,5=worker2:6002,6=worker3:6003,7=worker4:6004
+      - --raft=1=raft-node1:5001,2=raft-node2:5002,3=raft-node3:5003
+      - --data-dir=/data
+      - --dashboard=dashboard:8080
+    ports:
+      - "6005:6005"
+    volumes:
+      - worker5-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z worker5 6005"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   dashboard:
     build:
       context: .
@@ -157,7 +207,7 @@ services:
     entrypoint: ["/app/bin/dashboard"]
     command:
       - --addr=:8080
-      - --nodes=1=raft-node1:5001,2=raft-node2:5002,3=raft-node3:5003,4=worker1:6001,5=worker2:6002,6=worker3:6003
+      - --nodes=1=raft-node1:5001,2=raft-node2:5002,3=raft-node3:5003,4=worker1:6001,5=worker2:6002,6=worker3:6003,7=worker4:6004,8=worker5:6005
       - --docker-compose-file=/app/docker-compose.yml
       - --docker-project-name=raft-maekawa-sync
       - --web-dir=/app/web/dist
@@ -172,6 +222,8 @@ services:
       - worker1
       - worker2
       - worker3
+      - worker4
+      - worker5
 
   requester:
     build:
@@ -192,3 +244,5 @@ volumes:
   worker1-data:
   worker2-data:
   worker3-data:
+  worker4-data:
+  worker5-data:

@@ -32,10 +32,16 @@ var upgrader = websocket.Upgrader{
 // Hub broadcasts DashEvents to all connected WebSocket clients.
 type Hub struct {
 	mu      sync.RWMutex
-	clients map[*websocket.Conn]struct{}
+	clients map[*websocket.Conn]*sync.Mutex
 }
 
-func NewHub() *Hub { return &Hub{clients: make(map[*websocket.Conn]struct{})} }
+func NewHub() *Hub { return &Hub{clients: make(map[*websocket.Conn]*sync.Mutex)} }
+
+func writeLocked(conn *websocket.Conn, mu *sync.Mutex, msg []byte) error {
+	mu.Lock()
+	defer mu.Unlock()
+	return conn.WriteMessage(websocket.TextMessage, msg)
+}
 
 func (h *Hub) Broadcast(e DashEvent) {
 	b, err := json.Marshal(e)
@@ -43,9 +49,14 @@ func (h *Hub) Broadcast(e DashEvent) {
 		return
 	}
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	for c := range h.clients {
-		if err := c.WriteMessage(websocket.TextMessage, b); err != nil {
+	clients := make(map[*websocket.Conn]*sync.Mutex, len(h.clients))
+	for c, mu := range h.clients {
+		clients[c] = mu
+	}
+	h.mu.RUnlock()
+
+	for c, mu := range clients {
+		if err := writeLocked(c, mu, b); err != nil {
 			log.Printf("ws write: %v", err)
 		}
 	}
@@ -185,7 +196,8 @@ func (h *Hub) ServeWS(c *Collector) http.HandlerFunc {
 			return
 		}
 		h.mu.Lock()
-		h.clients[conn] = struct{}{}
+		connMu := &sync.Mutex{}
+		h.clients[conn] = connMu
 		h.mu.Unlock()
 
 		if c != nil {
@@ -194,7 +206,7 @@ func (h *Hub) ServeWS(c *Collector) http.HandlerFunc {
 				Payload: c.SnapshotPayload(),
 			})
 			if err == nil {
-				if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+				if err := writeLocked(conn, connMu, b); err != nil {
 					log.Printf("ws snapshot write: %v", err)
 				}
 			}

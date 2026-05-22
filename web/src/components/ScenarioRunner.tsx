@@ -77,6 +77,35 @@ async function waitForTask(taskId: string, predicate: (task: TaskState) => boole
   }, timeoutMs)
 }
 
+async function waitForStableLeader(timeoutMs: number, stableMs = 1200): Promise<number | null> {
+  const deadline = Date.now() + timeoutMs
+  let leaderId: number | null = null
+  let stableSince = 0
+
+  while (Date.now() < deadline) {
+    const current = currentLeaderId()
+    if (current != null) {
+      if (current === leaderId) {
+        if (stableSince === 0) {
+          stableSince = Date.now()
+        }
+        if (Date.now() - stableSince >= stableMs) {
+          return current
+        }
+      } else {
+        leaderId = current
+        stableSince = Date.now()
+      }
+    } else {
+      leaderId = null
+      stableSince = 0
+    }
+    await sleep(100)
+  }
+
+  return null
+}
+
 async function getNodeAddr(nodeId: number): Promise<string | null> {
   const res = await fetchNodes()
   return res.nodes.find(node => node.id === nodeId)?.addr ?? null
@@ -363,8 +392,10 @@ function makeScenarios(flash: (msg: string, err?: boolean) => void): ScenarioDef
 
         const recovered = await waitForTask(
           submitted.task_id,
-          task => task.status === 'completed' || (task.assigned_to > 0 && task.assigned_to !== crashedWorker),
-          12000,
+          task => task.status === 'completed' ||
+            task.status === 'pending' ||
+            (task.status === 'in_progress' && task.assigned_to > 0 && task.assigned_to !== crashedWorker),
+          20000,
         )
         if (!recovered) {
           flash('✗ Task was not reassigned or completed in time', true)
@@ -373,6 +404,24 @@ function makeScenarios(flash: (msg: string, err?: boolean) => void): ScenarioDef
 
         if (recovered.status === 'completed') {
           flash('✓ Task recovered and completed after worker crash')
+          return
+        }
+        if (recovered.status === 'pending') {
+          flash('✓ Task recovered — reset to pending, waiting for re-assignment…')
+          const reclaimed = await waitForTask(
+            submitted.task_id,
+            task => task.status === 'completed' || (task.status === 'in_progress' && task.assigned_to > 0 && task.assigned_to !== crashedWorker),
+            20000,
+          )
+          if (!reclaimed) {
+            flash('✗ Recovered task never reached a new worker in time', true)
+            return
+          }
+          if (reclaimed.status === 'completed') {
+            flash('✓ Task recovered and completed after worker crash')
+            return
+          }
+          flash(`✓ Task recovered and moved to W${reclaimed.assigned_to - 3}`)
           return
         }
         flash(`✓ Task recovered and moved to W${recovered.assigned_to - 3}`)
@@ -412,16 +461,16 @@ function makeScenarios(flash: (msg: string, err?: boolean) => void): ScenarioDef
     {
       id: 'regrid',
       title: 'Regrid (Kill + Recover Worker)',
-      desc: 'Kill W4 → quorum recomputed → submit tasks → revive W4 → regrid',
+      desc: 'Kill W1 → quorum recomputed → submit tasks → revive W1 → regrid',
       category: 'combined',
       async run(flash) {
-        flash('Killing worker 4 to trigger regrid…')
+        flash('Killing W1 to trigger regrid…')
         const r1 = await killNode(4)
         if (!r1.ok) { flash(`✗ ${r1.error}`, true); return }
         await sleep(800)
-        flash('W4 killed — submitting tasks on reduced quorum…')
+        flash('W1 killed — submitting tasks on reduced quorum…')
         await submitTask('regrid-task-1')
-        flash('✓ Quorum reduced. Start W4 to see regrid and rebalance.')
+        flash('✓ Quorum reduced. Start W1 to see regrid and rebalance.')
       },
     },
     {
@@ -477,7 +526,14 @@ function makeScenarios(flash: (msg: string, err?: boolean) => void): ScenarioDef
           return
         }
 
-        flash(`✓ N${targetId} rejoined as ${rejoined.role}. Submit another task to show catch-up…`)
+        flash(`✓ N${targetId} rejoined as ${rejoined.role}. Waiting for leader to stabilize…`)
+        const stableLeader = await waitForStableLeader(8000)
+        if (stableLeader == null) {
+          flash('✗ Cluster did not stabilize after follower restart', true)
+          return
+        }
+
+        flash(`✓ Leader N${stableLeader} is stable. Submit another task to show catch-up…`)
         const finalSubmit = await submitTask('after-raft-restart')
         flash(finalSubmit.ok ? `✓ ${finalSubmit.task_id?.slice(0, 8)} queued after restart` : `✗ ${finalSubmit.error}`, !finalSubmit.ok)
       },

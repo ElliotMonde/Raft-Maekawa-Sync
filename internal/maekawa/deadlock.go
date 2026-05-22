@@ -56,7 +56,7 @@ func (w *Worker) Inquire(ctx context.Context, req *maekawapb.InquireRequest) (*m
 	}
 
 	if w.grantsReceived[req.SenderId] {
-		// We hold this voter's grant yield it back now
+		// We hold this voter's grant — yield it back now
 		w.yieldedTo[req.SenderId] = req.Timestamp
 		delete(w.grantsReceived, req.SenderId)
 		w.votesReceived--

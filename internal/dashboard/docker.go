@@ -48,8 +48,8 @@ func (m *DockerComposeManager) StopNode(id int32) error {
 	if !ok {
 		return fmt.Errorf("docker manager does not know node %d", id)
 	}
-	if out, err := m.runCompose("stop", service); err != nil {
-		return fmt.Errorf("docker compose stop %s: %w: %s", service, err, out)
+	if out, err := m.runCompose("kill", service); err != nil {
+		return fmt.Errorf("docker compose kill %s: %w: %s", service, err, out)
 	}
 	return nil
 }
